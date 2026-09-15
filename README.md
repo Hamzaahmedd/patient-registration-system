@@ -5,7 +5,7 @@ persistent Neon Postgres database, built as a modular monolith.
 
 ## Live demo (session-specific, see note)
 
-- **API_BASE_URL:** `<PASTE_API_BASE_URL_HERE>`
+- **API_BASE_URL:** `https://backtalk-despite-frostily.ngrok-free.dev`
 - **Phone number:** `+14066013038`
 
 > These are only live while the developer's local server + ngrok tunnel are running for this
@@ -98,8 +98,8 @@ cp .env.example .env
 
 ### 2. Database
 ```bash
-npx prisma migrate dev --name init   # creates the patients table on Neon
-npm run seed                         # inserts 2 demo patients
+npx prisma migrate deploy   # applies all migrations (patients, transcripts, appointments) to Neon
+npm run seed                # inserts 2 demo patients + 2 demo transcripts
 ```
 
 ### 3. Run
@@ -178,7 +178,26 @@ The webhook handler never throws: a missing `call.id` is logged and skipped, and
 persistence failure is caught and logged rather than surfaced back to Vapi (there's nothing
 Vapi could do with an error after the call has already ended).
 
+## Appointment scheduling
+
+Mock bookings — no real calendar, provider assignment, or conflict checking — recorded when the
+voice agent's `schedule_appointment` tool is called (see "Bonus features implemented" below):
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | UUID | Primary key |
+| `patient_id` | UUID, **required** | Unlike `Transcript`, never nullable — a booking can only be requested once a patient record exists. `createAppointment` confirms the patient exists (reusing `getPatientById`) before booking, so a bad id fails with the same clean "not found" error used everywhere else rather than a raw FK-constraint crash. |
+| `preferred_date` | date | Normalized from spoken input the same way as `date_of_birth` (`date-parser.ts`), but validated in the opposite direction — must not be in the past. |
+| `preferred_time_slot` | string | Free text — "Morning", "Afternoon", "Evening", or a specific time; not a fixed enum. |
+| `created_at` | timestamp | Auto-generated |
+
+`GET /patients/:id/appointments` follows the same 404-vs-empty-array convention as the
+transcripts endpoint above. No `PUT`/`DELETE` — bookings are mock and append-only, matching the
+"just record what the caller asked for" scope of this bonus.
+
 ## Environment variables
+
+**Backend** (`backend/.env`, see `backend/.env.example`):
 
 | Var | Required | Purpose |
 |---|---|---|
@@ -188,6 +207,12 @@ Vapi could do with an error after the call has already ended).
 | `CORS_ORIGINS` | No (defaults to Vite's `:5173` on localhost/127.0.0.1) | Comma-separated origins allowed to call this API cross-origin — the React frontend. |
 | `VAPI_API_KEY` | Only if provisioning assistants via Vapi's API instead of the dashboard | Not read by the running server today — reserved for a future automation script. |
 | `VAPI_WEBHOOK_SECRET` | Recommended | If set, `/voice/webhook` requires a matching `x-vapi-secret` header; if left empty, the check is skipped (documented trade-off below). |
+
+**Frontend** (`frontend/.env`, see `frontend/.env.example`):
+
+| Var | Required | Purpose |
+|---|---|---|
+| `VITE_API_BASE_URL` | No | Leave unset for local dev (requests go through the Vite proxy to `:3000`). Set only when serving the built frontend from somewhere that can't proxy to the backend — requests then go directly to this URL, which must be listed in the backend's `CORS_ORIGINS`. |
 
 ## Voice ↔ database integration
 
@@ -215,7 +240,7 @@ Checked against the codebase (not just design intent) before moving to bonus fea
 | PII redaction in logs, full payload logged per spec | ✅ (fixed) | see below |
 | DB/tool exceptions return clean spoken text, never drop the call | ✅ (fixed) | see below |
 | Vapi webhook responses decoupled from the REST envelope | ✅ | `voice-controller.ts` returns bare `{ results: [...] }`; only `/patients` gets `response-envelope.ts` |
-| Neon Postgres + Prisma persistence survives restarts | ✅ | verified live — see "Working system" notes above; also re-confirmed via a standalone process reading the DB with zero app state carried over |
+| Neon Postgres + Prisma persistence survives restarts | ✅ | verified live: seeded data was read back from a brand-new process with zero app state carried over, and again after every server restart across this project's build sessions |
 
 **Two gaps found and fixed during this audit:**
 1. **PII redaction was silently eating the required log.** The original redact config used
@@ -243,6 +268,17 @@ on tracked conversation state, which is out of scope for a 3-hour build) and is 
 rather than glossing over.
 
 ## Bonus features implemented
+
+All 6 bonus challenges from the spec are implemented:
+
+| # | Challenge | Status |
+|---|---|---|
+| 1 | Duplicate-caller detection | ✅ two mechanisms — see below |
+| 2 | Dashboard | ✅ two versions (React + zero-build static) |
+| 3 | Call recording/transcript | ✅ |
+| 4 | Appointment scheduling | ✅ |
+| 5 | Multi-language support (Spanish) | ✅ prompt-level |
+| 6 | Automated tests | ✅ 68 tests, hand-rolled script (not Jest/Vitest — see note under #6) |
 
 **1. Duplicate-caller detection (voice integration) — two complementary mechanisms:**
 
@@ -375,11 +411,24 @@ record reflects the language the call was actually conducted in.
 > only be confirmed by really trying it, which wasn't done here. Worth verifying before relying
 > on it for a demo.
 
+**6. Automated tests.** `backend/src/tests/run-tests.ts` — 68 tests, run via `npm test`, boot
+the real Express app in-process against the configured database and exercise every REST
+endpoint and every voice-webhook path with real HTTP/fetch calls: create/read/update/soft-delete
+patients, every validation edge case (future DOB, malformed phone, missing required field), the
+`include_deleted` toggle, both duplicate-detection mechanisms, call transcripts (linking,
+idempotent retry, the anonymous-call path), and appointment scheduling (booking, past-date
+rejection, missing/unknown `patient_id`). All fixture data it creates is cleaned up at the end
+of each covered section (soft-deleted via the real API, or hard-deleted directly for data with
+no delete endpoint, like transcripts) so repeated runs don't pollute the shared dev database.
+
+> Satisfies the spec's ask ("unit or integration tests for the API layer") in substance, but
+> it's a hand-rolled script asserting against real HTTP responses, not a framework like
+> Jest/Vitest — no test runner, no isolated test database, no CI wiring. Documented as a
+> trade-off, not hidden: see "Known limitations" and "Next steps" below for what a follow-up
+> pass would add.
+
 ## Known limitations / trade-offs
 
-- **Appointment scheduling, multi-language support, and call transcripts remain deferred** — out
-  of core scope per this build's priorities (duplicate detection and the dashboard, originally
-  listed here too, are now implemented above).
 - **US states only** (50 + DC) — territories (PR, GU, VI, etc.) are out of scope.
 - **`VAPI_WEBHOOK_SECRET` is optional** — if unset, the webhook accepts any caller. Fine for a
   time-boxed demo behind a private ngrok URL; a production deployment should make this mandatory.
@@ -388,9 +437,6 @@ record reflects the language the call was actually conducted in.
   pressure" evaluation criterion.
 - **No telephony-drop / mid-call resume handling** — if the call disconnects mid-registration,
   nothing is saved (no partial-save checkpointing), and the caller must start over on a new call.
-- **Test suite is a hand-rolled sanity script**, not a full framework (Jest/Vitest) — covers the
-  required-by-spec edge cases (validation, 400/404/422, soft-delete exclusion, idempotent
-  delete) but isn't exhaustive.
 - **Vapi setup gotcha (worth knowing if you rebuild the assistant):** creating a tool in Vapi's
   Tools/Functions library does not automatically make it callable — it must also be selected in
   the assistant's Model config (a separate "Tools" selector). Without that second step, the LLM
@@ -407,15 +453,14 @@ record reflects the language the call was actually conducted in.
 
 ## Next steps
 
-All bonus challenges from the spec are now implemented. What's left is verification, not new
-scope:
+All 6 bonus challenges from the spec are implemented. What's left is verification and polish,
+not new scope:
 
-- A proper automated test framework + CI (still a hand-rolled script, see above).
+- Migrate the hand-rolled test script to a real framework (Jest/Vitest) with CI wiring.
 - Re-test the following live against a real phone call — all are code-complete and covered by
   simulated-webhook tests, but not yet confirmed against Vapi's actual behavior in a live call:
   duplicate-caller detection, end-of-call-report transcript capture, appointment scheduling, and
   the Spanish language switch.
 - An "Appointments" view in the dashboard — the REST endpoint (`GET /patients/:id/appointments`)
-  exists and is tested, but the frontend doesn't yet surface it (the frontend already has a
-  Transcripts tab from the previous round).
-- A "Transcripts" view in the dashboard(s) over the new `GET /transcripts` endpoint.
+  exists and is tested, but the frontend doesn't yet surface it (the frontend's Transcripts tab
+  over `GET /transcripts` was built in an earlier round and already works).
