@@ -168,3 +168,34 @@ export const VOICE_AGENT_TOOLS = [
     },
   },
 ] as const;
+
+/** Spoken as soon as the call connects, for a caller not recognized by phone number. */
+export const DEFAULT_FIRST_MESSAGE =
+  "Thanks for calling - this is Alex, your patient intake coordinator. Can I get your first and last name to get started?";
+
+/**
+ * Builds the greeting used when call-start caller-ID lookup (see voice-service.ts
+ * buildAssistantConfigForCall) already matched an existing patient before the caller has said
+ * anything - lets the assistant open with "Welcome back" instead of asking for the phone number
+ * a second time when it's already known from the incoming call itself.
+ */
+export function buildReturningCallerFirstMessage(firstName: string): string {
+  return `Welcome back, ${firstName}! It looks like we already have a record for you. Would you like to update your information instead?`;
+}
+
+/**
+ * Appended to the system prompt when call-start caller-ID lookup already found a match, so the
+ * model knows the patient_id up front and doesn't need to call lookup_patient_by_phone itself
+ * for this call (it already happened server-side before the conversation started).
+ */
+export function buildKnownCallerContext(patientId: string, firstName: string, lastName: string): string {
+  return `
+
+## Known caller (already looked up before this call started)
+Caller ID matched an existing patient record: ${firstName} ${lastName}, patient_id ${patientId}.
+Do not call lookup_patient_by_phone for this call - it already happened. Open with the
+"Welcome back" greeting you were given as your first message, then follow the update flow from
+the "Duplicate caller detection" section above using this patient_id directly with
+update_patient once the caller confirms they want to update. If they instead say they want a
+fresh registration, proceed with the normal registration flow.`;
+}

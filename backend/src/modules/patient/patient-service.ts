@@ -92,9 +92,21 @@ export async function getPatientById(patientId: string): Promise<PatientDTO> {
   return toDTO(patient);
 }
 
+/**
+ * Normalizes a phone number for lookup against our stored 10-digit U.S. format. Caller-ID/ANI
+ * numbers (e.g. from a Vapi call's `customer.number`) commonly arrive in E.164 form with a
+ * leading "+1" country code ("+15551234567"), which strips to 11 digits - drop the leading "1"
+ * so it still matches the 10-digit number a caller spoke and had validated at registration time.
+ */
+function normalizePhoneForLookup(phoneNumber: string): string {
+  const digits = phoneNumber.replace(/\D/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) return digits.slice(1);
+  return digits;
+}
+
 /** Returns null instead of throwing - used internally by the voice module's lookup flow. */
 export async function findPatientByPhoneNumber(phoneNumber: string): Promise<PatientDTO | null> {
-  const digits = phoneNumber.replace(/\D/g, "");
+  const digits = normalizePhoneForLookup(phoneNumber);
   const patient = await prisma.patient.findFirst({
     where: { phone_number: digits, deleted_at: null },
   });

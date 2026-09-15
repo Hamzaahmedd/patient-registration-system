@@ -2,6 +2,7 @@ import { Router, type NextFunction, type Request, type Response } from "express"
 import { env } from "../../config/env";
 import { logger } from "../../config/logger";
 import {
+  buildAssistantConfigForCall,
   handleCreatePatientTool,
   handleLookupPatientByPhoneTool,
   handleUpdatePatientTool,
@@ -27,6 +28,11 @@ interface VapiWebhookBody {
   message?: {
     type?: string;
     toolCallList?: VapiToolCall[];
+    call?: {
+      customer?: {
+        number?: string;
+      };
+    };
   };
 }
 
@@ -60,6 +66,18 @@ voiceRouter.post("/webhook", async (req: Request, res: Response, _next: NextFunc
   }
 
   const body = req.body as VapiWebhookBody;
+
+  // Call-start duplicate detection: Vapi's "assistant-request" event fires before the assistant
+  // is chosen for an inbound call, carrying the caller's number in message.call.customer.number.
+  // Only takes effect if the Vapi phone number is configured to request a dynamic assistant here
+  // instead of using a statically-assigned one - see buildAssistantConfigForCall's doc comment.
+  if (body.message?.type === "assistant-request") {
+    const callerNumber = body.message.call?.customer?.number;
+    const assistant = await buildAssistantConfigForCall(callerNumber);
+    res.status(200).json({ assistant });
+    return;
+  }
+
   const toolCalls = body.message?.toolCallList ?? [];
 
   if (toolCalls.length === 0) {

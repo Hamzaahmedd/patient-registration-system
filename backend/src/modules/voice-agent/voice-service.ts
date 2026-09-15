@@ -4,6 +4,13 @@ import { parseSpokenDate } from "../../shared/utils/date-parser";
 import { logger } from "../../config/logger";
 import { createPatientSchema, updatePatientSchema } from "../patient/patient-schema";
 import { createPatient, findPatientByPhoneNumber, updatePatient } from "../patient/patient-service";
+import {
+  buildKnownCallerContext,
+  buildReturningCallerFirstMessage,
+  DEFAULT_FIRST_MESSAGE,
+  REGISTRATION_SYSTEM_PROMPT,
+  VOICE_AGENT_TOOLS,
+} from "./prompt-templates";
 
 /**
  * Turns a ZodError into a short, speakable sentence naming the specific field(s) that
@@ -51,6 +58,79 @@ export async function handleLookupPatientByPhoneTool(rawArgs: Record<string, unk
   } catch (error) {
     logger.error({ err: error }, "voice_lookup_patient_failed");
     return "The lookup couldn't be completed right now. Proceed with a new registration.";
+  }
+}
+
+export interface DynamicAssistantConfig {
+  name: string;
+  firstMessage: string;
+  model: {
+    provider: string;
+    model: string;
+    messages: Array<{ role: "system"; content: string }>;
+    tools: typeof VOICE_AGENT_TOOLS;
+  };
+}
+
+/**
+ * Call-start duplicate detection: builds the assistant config Vapi should use for THIS call,
+ * based on the caller's phone number (ANI) if one was provided in the inbound call payload -
+ * before the caller has said a single word. This is what makes "Welcome back, Jane!" possible
+ * as the very first thing the caller hears, instead of only after they've spoken their phone
+ * number and the model has called lookup_patient_by_phone mid-conversation.
+ *
+ * IMPORTANT (documented honestly): this powers Vapi's "assistant-request" webhook flow, which
+ * requires the phone number's inbound-call setting to point at this server instead of a
+ * statically-assigned assistant. That dashboard change has NOT been made/verified live in this
+ * project - the existing statically-assigned assistant (using REGISTRATION_SYSTEM_PROMPT /
+ * VOICE_AGENT_TOOLS directly, with in-conversation lookup_patient_by_phone) is what was actually
+ * tested against a real phone call. This function is additive and inert unless that dashboard
+ * setting is switched - see README "Known limitations" for what to verify before relying on it.
+ * The model/provider below are placeholders matching the setup guide's suggested default and
+ * should be confirmed against whatever the Vapi assistant is actually configured to use.
+ */
+export async function buildAssistantConfigForCall(callerPhoneNumber: string | null | undefined): Promise<DynamicAssistantConfig> {
+  const base: DynamicAssistantConfig = {
+    name: "patient-registration-agent",
+    firstMessage: DEFAULT_FIRST_MESSAGE,
+    model: {
+      provider: "openai",
+      model: "gpt-4o-mini",
+      messages: [{ role: "system", content: REGISTRATION_SYSTEM_PROMPT }],
+      tools: VOICE_AGENT_TOOLS,
+    },
+  };
+
+  if (!callerPhoneNumber || callerPhoneNumber.trim().length === 0) {
+    return base;
+  }
+
+  try {
+    const patient = await findPatientByPhoneNumber(callerPhoneNumber);
+    if (!patient) {
+      return base;
+    }
+    logger.info(
+      { patient_id: patient.patient_id, first_name: patient.first_name },
+      "returning_caller_detected_at_call_start",
+    );
+    return {
+      ...base,
+      firstMessage: buildReturningCallerFirstMessage(patient.first_name),
+      model: {
+        ...base.model,
+        messages: [
+          {
+            role: "system",
+            content: REGISTRATION_SYSTEM_PROMPT + buildKnownCallerContext(patient.patient_id, patient.first_name, patient.last_name),
+          },
+        ],
+      },
+    };
+  } catch (error) {
+    // Never let a lookup failure block call setup - fall back to the default, generic assistant.
+    logger.error({ err: error }, "call_start_lookup_failed");
+    return base;
   }
 }
 

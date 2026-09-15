@@ -207,22 +207,38 @@ rather than glossing over.
 
 ## Bonus features implemented
 
-**1. Duplicate-caller detection (voice integration).** A new `lookup_patient_by_phone` tool
-(`voice-service.ts` → `handleLookupPatientByPhoneTool`, backed by the existing
-`findPatientByPhoneNumber` in `patient-service.ts`) is called by the assistant as soon as the
-caller's phone number is known — before collecting anything else. The system prompt
-(`prompt-templates.ts`) branches on the result:
-- Match found → the assistant greets the caller by name ("Welcome back, Jane! It looks like we
-  already have a record for you. Would you like to update your information instead?") and, if
-  they agree, switches into an update flow that calls `update_patient` with the `patient_id`
-  the lookup returned, changing only the fields the caller wants changed.
-- No match → the normal full registration flow continues, invisibly to the caller.
+**1. Duplicate-caller detection (voice integration) — two complementary mechanisms:**
 
-Verified directly against the webhook (bypassing the need for a live phone call) with three
-simulated tool-calls: an existing phone number correctly returned the matching patient's name
-and ID, an unknown number correctly returned "no existing record," and a follow-up
-`update_patient` call using the returned ID correctly updated that patient — all without
-touching the REST API's behavior (full 19-test suite re-run and still green afterward).
+- **Mid-conversation lookup (live-verified against a real phone call).** A
+  `lookup_patient_by_phone` tool (`voice-service.ts` → `handleLookupPatientByPhoneTool`, backed
+  by `findPatientByPhoneNumber` in `patient-service.ts`) is called by the assistant as soon as
+  the caller's phone number is known — before collecting anything else. The system prompt
+  (`prompt-templates.ts`) branches on the result: match found → the assistant greets the caller
+  by name ("Welcome back, Jane! It looks like we already have a record for you. Would you like
+  to update your information instead?") and, if they agree, calls `update_patient` with the
+  returned `patient_id`, changing only what the caller wants changed; no match → the normal
+  registration flow continues invisibly.
+- **Call-start caller-ID lookup (new — code-complete and test-verified, not yet live-wired).**
+  `buildAssistantConfigForCall` (`voice-service.ts`) runs the same phone lookup the instant a
+  call starts, using the caller's ANI (`message.call.customer.number` on Vapi's
+  `assistant-request` webhook event) — before the caller has said anything. A match swaps in a
+  "Welcome back, [name]!" first message and appends the matched `patient_id` to the system
+  prompt so the model can go straight to `update_patient` once the caller confirms; no match (or
+  no number, e.g. some web test calls) falls back to the standard greeting. Phone numbers are
+  normalized for E.164 caller-ID format (`+15551234567` → `5551234567`) before comparing against
+  our stored 10-digit numbers.
+  > **This only takes effect if the Vapi phone number's inbound-call setting is switched from a
+  > statically-assigned assistant to "request a dynamic assistant" pointed at this same
+  > `/voice/webhook` URL** — a dashboard change not made or live-tested in this session (the
+  > already-verified live call used the statically-assigned assistant + mid-conversation lookup
+  > above). The code degrades safely either way: if that setting is never changed, this new
+  > branch simply never fires and nothing about the working setup changes.
+
+Both mechanisms share the same `findPatientByPhoneNumber` lookup and are covered by 12
+automated tests in `src/tests/run-tests.ts` (lookup match/no-match, a follow-up `update_patient`
+using the lookup-derived id, and all three `assistant-request` cases: matched caller, unmatched
+caller, and no caller number at all) — full suite is now **31/31 passing**, with zero changes to
+existing REST behavior.
 
 **2. Patient dashboard - two versions exist, both read-only over `GET /patients`:**
 

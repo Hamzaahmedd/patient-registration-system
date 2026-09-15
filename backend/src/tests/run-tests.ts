@@ -115,6 +115,114 @@ async function main() {
   const secondDelete = await req("DELETE", `/patients/${patientId}`);
   assert(secondDelete.status === 404, `Deleting an already-deleted patient returns 404 (got ${secondDelete.status})`);
 
+  // ---------------------------------------------------------------------------------------
+  // Duplicate-caller detection (voice agent)
+  // ---------------------------------------------------------------------------------------
+  const dupPatient = {
+    first_name: "Dana",
+    last_name: "Whitfield",
+    date_of_birth: "03/03/1985",
+    sex: "Other",
+    phone_number: "5557778888",
+    address_line_1: "9 Duplicate Ln",
+    city: "Dupeton",
+    state: "NY",
+    zip_code: "10001",
+  };
+  const dupCreated = await req("POST", "/patients", dupPatient);
+  assert(dupCreated.status === 201, "Duplicate-detection fixture patient created");
+  const dupPatientId: string = dupCreated.json?.data?.patient_id;
+
+  // 11. Mid-conversation lookup via the lookup_patient_by_phone tool call
+  const lookupMatch = await req("POST", "/voice/webhook", {
+    message: {
+      type: "tool-calls",
+      toolCallList: [
+        { id: "call_a", function: { name: "lookup_patient_by_phone", arguments: { phone_number: "555-777-8888" } } },
+      ],
+    },
+  });
+  assert(lookupMatch.status === 200, "lookup_patient_by_phone tool-call returns 200");
+  const lookupMatchResult: string = lookupMatch.json?.results?.[0]?.result ?? "";
+  assert(
+    lookupMatchResult.includes("Dana") && lookupMatchResult.includes(dupPatientId),
+    "lookup_patient_by_phone finds the existing record by name and id",
+  );
+
+  const lookupNoMatch = await req("POST", "/voice/webhook", {
+    message: {
+      type: "tool-calls",
+      toolCallList: [
+        { id: "call_b", function: { name: "lookup_patient_by_phone", arguments: { phone_number: "9999999999" } } },
+      ],
+    },
+  });
+  const lookupNoMatchResult: string = lookupNoMatch.json?.results?.[0]?.result ?? "";
+  assert(
+    lookupNoMatchResult.toLowerCase().includes("no existing record"),
+    "lookup_patient_by_phone reports no match for an unknown number",
+  );
+
+  // Follow-up update using the patient_id the lookup returned - proves the model could actually
+  // route a confirmed "yes, update me" into a real update_patient call.
+  const dupVoiceUpdate = await req("POST", "/voice/webhook", {
+    message: {
+      type: "tool-calls",
+      toolCallList: [
+        {
+          id: "call_c",
+          function: { name: "update_patient", arguments: { patient_id: dupPatientId, city: "Updateville" } },
+        },
+      ],
+    },
+  });
+  const dupVoiceUpdateResult: string = dupVoiceUpdate.json?.results?.[0]?.result ?? "";
+  assert(dupVoiceUpdateResult.includes("Dana"), "update_patient tool-call succeeds using the lookup-derived patient_id");
+  const afterVoiceUpdate = await req("GET", `/patients/${dupPatientId}`);
+  assert(afterVoiceUpdate.json?.data?.city === "Updateville", "update_patient tool-call actually persisted the change");
+
+  // 12. Call-start caller-ID lookup (assistant-request path) - see voice-service.ts buildAssistantConfigForCall
+  const assistantRequestMatch = await req("POST", "/voice/webhook", {
+    message: {
+      type: "assistant-request",
+      call: { customer: { number: "+15557778888" } }, // E.164 with country code, as Vapi provides
+    },
+  });
+  assert(assistantRequestMatch.status === 200, "assistant-request returns 200 for a recognized caller");
+  const matchedFirstMessage: string = assistantRequestMatch.json?.assistant?.firstMessage ?? "";
+  assert(
+    matchedFirstMessage.includes("Welcome back") && matchedFirstMessage.includes("Dana"),
+    "assistant-request greets a recognized caller by name before they've said anything",
+  );
+  const matchedSystemPrompt: string = assistantRequestMatch.json?.assistant?.model?.messages?.[0]?.content ?? "";
+  assert(
+    matchedSystemPrompt.includes(dupPatientId),
+    "assistant-request's system prompt carries the matched patient_id for a follow-up update_patient call",
+  );
+
+  const assistantRequestNoMatch = await req("POST", "/voice/webhook", {
+    message: {
+      type: "assistant-request",
+      call: { customer: { number: "+19998887777" } },
+    },
+  });
+  assert(assistantRequestNoMatch.status === 200, "assistant-request returns 200 for an unrecognized caller");
+  const unmatchedFirstMessage: string = assistantRequestNoMatch.json?.assistant?.firstMessage ?? "";
+  assert(
+    !unmatchedFirstMessage.includes("Welcome back"),
+    "assistant-request uses the generic greeting for an unrecognized caller",
+  );
+
+  const assistantRequestNoNumber = await req("POST", "/voice/webhook", {
+    message: { type: "assistant-request" },
+  });
+  assert(
+    assistantRequestNoNumber.status === 200,
+    "assistant-request with no customer number still returns 200 (never blocks call setup)",
+  );
+
+  await req("DELETE", `/patients/${dupPatientId}`);
+
   server.close();
   await disconnectDatabase();
 
