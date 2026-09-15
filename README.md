@@ -1,0 +1,193 @@
+# Voice AI Patient Registration System
+
+A voice-based patient intake agent (Vapi + LLM) backed by a Node.js/Express REST API and a
+persistent Neon Postgres database, built as a modular monolith.
+
+## Live demo (session-specific, see note)
+
+- **API base URL (local + tunneled):** `https://backtalk-despite-frostily.ngrok-free.dev`
+- **Phone number:** `<fill in the Vapi trial number — area code 406>` (see Vapi dashboard → Phone Numbers)
+
+> These are only live while the developer's local server + ngrok tunnel are running for this
+> review session. For a durable link, redeploy `backend/` to Render/Fly.io and update the
+> Vapi assistant's Server URL accordingly (see "Known limitations" below).
+
+## Architecture
+
+```
+Phone Call (Caller)
+      │
+      ▼
+Vapi Assistant  ──tool calls──▶  POST /voice/webhook  ──┐
+(STT/TTS/LLM)                    (backend/src/modules/   │
+                                   voice-agent)           │
+                                                           ▼
+                                                  patient-service.ts
+                                                  (shared business logic
+                                                   + validation)
+                                                           │
+                                                           ▼
+                                                  Prisma ORM ──▶ Neon Postgres
+                                                           ▲
+                                                           │
+REST clients ──▶  /patients  (backend/src/modules/patient)┘
+```
+
+**Modular monolith, one deployable, clean separation of concerns:**
+
+- `modules/patient/` — REST controller, Zod schema, service (Prisma access), types. This is the
+  single owner of all patient CRUD + validation logic.
+- `modules/voice-agent/` — Vapi webhook controller, voice-specific orchestration, and the
+  documented system prompt + tool definitions. **Never touches Prisma directly** — it calls the
+  exact same `patient-service.ts` functions the REST layer uses, so a phone call and an API
+  request are validated and persisted identically.
+- `shared/` — cross-cutting concerns used by both modules: the `{ data, error }` response
+  envelope, centralized error handling, spoken-date parsing, and PII-safe logging.
+- `config/` — environment loading, the singleton Prisma client, and the Pino logger.
+
+## Tech stack + why
+
+| Layer | Choice | Why |
+|---|---|---|
+| Backend | Node.js + TypeScript + Express | Fast to build, strong typing catches schema/API mismatches before runtime, minimal ceremony for a 3-hour build. |
+| Database | Neon Postgres (free tier) | Real relational constraints/types for the demographic schema, and — critically — persistence lives outside our server process, so "call back later, data's still there" holds even across redeploys, not just server restarts. |
+| ORM | Prisma | Schema-as-code, type-safe queries, one-command migrations against Neon. |
+| Validation | Zod | One schema (`patient-schema.ts`) enforces every rule in the spec's field table and is shared by both the REST controller and the voice webhook — validation can't drift between the two entry points. |
+| Voice AI | Vapi | Abstracts telephony/STT/TTS and gives a real dialable US number, so effort goes into prompt engineering and the tool-calling integration instead of a speech pipeline. |
+| Logging | Pino | Structured JSON logs; PII fields are redacted in ambient logs and masked (not raw) in the one required "final payload" log — see `shared/utils/pii-sanitizer.ts`. |
+
+## Project layout
+
+```
+backend/
+├── prisma/
+│   ├── schema.prisma        # Patient model, all 17 fields, constraints, indexes
+│   └── seed.ts               # 2 demo patients
+├── src/
+│   ├── config/                # env, Prisma client singleton, logger
+│   ├── modules/
+│   │   ├── patient/           # REST: controller, service, zod schema, types
+│   │   └── voice-agent/       # Vapi webhook controller, service, prompt + tool defs
+│   ├── shared/
+│   │   ├── middleware/        # response envelope, centralized error handler
+│   │   └── utils/              # spoken date parser, PII masking/redaction
+│   ├── tests/run-tests.ts     # REST endpoint sanity suite (no framework dependency)
+│   ├── app.ts
+│   └── index.ts
+```
+
+## Setup
+
+### Prerequisites
+- Node.js 20+
+- A free [Neon](https://neon.tech) Postgres project
+- A [Vapi](https://vapi.ai) account (for the phone number + assistant)
+
+### 1. Install & configure
+```bash
+cd backend
+npm install
+cp .env.example .env
+# edit .env: paste your Neon connection string into DATABASE_URL
+```
+
+### 2. Database
+```bash
+npx prisma migrate dev --name init   # creates the patients table on Neon
+npm run seed                         # inserts 2 demo patients
+```
+
+### 3. Run
+```bash
+npm run dev        # http://localhost:3000, health check at /health
+```
+
+### 4. Test
+```bash
+npm test           # boots the app in-process and exercises every endpoint + edge case
+```
+
+### 5. Voice agent (Vapi)
+1. Create a Vapi assistant.
+2. Paste `backend/src/modules/voice-agent/prompt-templates.ts` → `REGISTRATION_SYSTEM_PROMPT`
+   into the assistant's system message.
+3. Register `VOICE_AGENT_TOOLS` (same file) as the assistant's function/tool definitions.
+4. Expose your local server publicly (`ngrok http 3000`) and set the assistant's server/webhook
+   URL to `https://<your-ngrok-domain>/voice/webhook`.
+5. Attach a phone number to the assistant and call it.
+
+## REST API
+
+All responses use the envelope `{ "data": ..., "error": null }` on success, or
+`{ "data": null, "error": { "code", "message", "details" } }` on failure.
+
+| Method | Endpoint | Status codes |
+|---|---|---|
+| GET | `/patients` (optional `?last_name=`, `?date_of_birth=`, `?phone_number=`) | 200 |
+| GET | `/patients/:id` | 200, 400 (malformed UUID), 404 |
+| POST | `/patients` | 201, 422 |
+| PUT | `/patients/:id` | 200, 400, 404, 422 |
+| DELETE | `/patients/:id` (soft delete — sets `deleted_at`, excluded from all reads) | 200, 400, 404 |
+
+## Environment variables
+
+| Var | Required | Purpose |
+|---|---|---|
+| `DATABASE_URL` | Yes | Neon Postgres connection string. |
+| `PORT` | No (default 3000) | HTTP port. |
+| `NODE_ENV` | No | `development` / `production`. |
+| `VAPI_API_KEY` | Only if provisioning assistants via Vapi's API instead of the dashboard | Not read by the running server today — reserved for a future automation script. |
+| `VAPI_WEBHOOK_SECRET` | Recommended | If set, `/voice/webhook` requires a matching `x-vapi-secret` header; if left empty, the check is skipped (documented trade-off below). |
+
+## Voice ↔ database integration
+
+The voice agent never talks to Postgres directly. Vapi's tool-calling webhook
+(`voice-controller.ts`) parses the assistant's `create_patient`/`update_patient` tool calls,
+runs the exact same Zod validation (`patient-schema.ts`) and service functions
+(`patient-service.ts`) as the REST API, and relays a spoken-language success or error message
+back — the webhook response is intentionally a bare `{ "results": [{ "toolCallId", "result" }] }`
+per Vapi's contract, not the REST `{ data, error }` envelope, since `result` is spoken directly
+to the caller and must stay a plain sentence.
+
+Spoken dates ("January 5th, 1990") are normalized by `date-parser.ts` before they ever reach the
+strict `MM/DD/YYYY` Zod check, so the caller can speak naturally while the schema stays simple.
+
+## Known limitations / trade-offs
+
+- **Duplicate-caller detection, appointment scheduling, multi-language, call transcripts, and a
+  dashboard UI are intentionally deferred** — out of core scope per this build's priorities.
+  `findPatientByPhoneNumber` already exists in `patient-service.ts` as a building block for the
+  duplicate-detection bonus.
+- **US states only** (50 + DC) — territories (PR, GU, VI, etc.) are out of scope.
+- **`VAPI_WEBHOOK_SECRET` is optional** — if unset, the webhook accepts any caller. Fine for a
+  time-boxed demo behind a private ngrok URL; a production deployment should make this mandatory.
+- **ngrok for local dev** — a Render/Fly.io deploy gets a stable public URL but costs setup time;
+  documented as the next step rather than done up front, per the "smart trade-offs under time
+  pressure" evaluation criterion.
+- **No telephony-drop / mid-call resume handling** — if the call disconnects mid-registration,
+  nothing is saved (no partial-save checkpointing), and the caller must start over on a new call.
+- **Test suite is a hand-rolled sanity script**, not a full framework (Jest/Vitest) — covers the
+  required-by-spec edge cases (validation, 400/404/422, soft-delete exclusion, idempotent
+  delete) but isn't exhaustive.
+- **Vapi setup gotcha (worth knowing if you rebuild the assistant):** creating a tool in Vapi's
+  Tools/Functions library does not automatically make it callable — it must also be selected in
+  the assistant's Model config (a separate "Tools" selector). Without that second step, the LLM
+  will still have a full conversation and even *hallucinate* a plausible-sounding save
+  confirmation or failure message without ever calling the webhook. Always verify a real call
+  actually reaches `/voice/webhook` (check server logs or the DB) rather than trusting the
+  spoken confirmation alone.
+- **Observed prompt-tuning gap:** in one test call, `create_patient` succeeded on the first
+  attempt (verified via the API), but the assistant then said "there was a technical issue and
+  nothing was saved" and asked to retry, before finally closing normally — no duplicate record
+  was created, so the underlying save was correct, but the assistant didn't reliably relay the
+  tool's actual success result. Worth revisiting the prompt's error-handling section to make
+  the "only report failure if the tool result says so" instruction more explicit.
+
+## Next steps (bonus challenges, deferred)
+
+- Duplicate-caller detection via `findPatientByPhoneNumber` + a conversational branch in the prompt.
+- Mock appointment scheduling after successful registration.
+- Multi-language support ("Hablo español" → Spanish system prompt variant).
+- Call transcript storage linked to `patient_id`.
+- A simple read-only dashboard over `GET /patients`.
+- A proper automated test framework + CI.
