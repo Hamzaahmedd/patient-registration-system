@@ -47,7 +47,8 @@ model Patient {
   updated_at DateTime  @updatedAt
   deleted_at DateTime?
 
-  transcripts Transcript[]
+  transcripts  Transcript[]
+  appointments Appointment[]
 
   // Frequently filtered/looked-up in both the REST API and the voice agent's
   // "is this a returning caller" check, so index them.
@@ -81,4 +82,23 @@ model Transcript {
 
   @@index([patient_id])
   @@map("transcripts")
+}
+
+// Mock appointment bookings (bonus feature) - offered by the voice agent immediately after a
+// successful registration. "Mock" per the spec: no real calendar/conflict checking, no
+// provider assignment - this just records what the caller asked for. Unlike Transcript,
+// patient_id is required: an appointment can only be requested once a patient record exists.
+model Appointment {
+  id String @id @default(uuid()) @db.Uuid
+
+  patient_id String  @db.Uuid
+  patient    Patient @relation(fields: [patient_id], references: [patient_id])
+
+  preferred_date      DateTime @db.Date
+  preferred_time_slot String   @db.VarChar(50)
+
+  created_at DateTime @default(now())
+
+  @@index([patient_id])
+  @@map("appointments")
 }

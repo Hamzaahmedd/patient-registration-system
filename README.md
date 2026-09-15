@@ -146,6 +146,7 @@ All responses use the envelope `{ "data": ..., "error": null }` on success, or
 | DELETE | `/patients/:id` (soft delete — sets `deleted_at`, excluded from all reads) | 200, 400, 404 |
 | GET | `/patients/:id/transcripts` — call transcripts for one patient | 200, 400, 404 |
 | GET | `/transcripts` — all call transcripts, newest first (for the dashboard) | 200 |
+| GET | `/patients/:id/appointments` — mock appointment bookings for one patient | 200, 400, 404 |
 
 > `?include_deleted=true` is additive (not in the original spec's filter list) — added so the
 > React dashboard's "Show deleted" toggle has something real to show. Unset/`false` preserves
@@ -304,7 +305,7 @@ caller, and no caller number at all), with zero changes to existing REST behavio
 
 Neither touches any existing endpoint's behavior or contract - both are pure presentation, and
 the one backend addition they both rely on (`?include_deleted=true`) is additive and covered by
-its own tests (see "Production guardrails self-audit" → now **52/52** tests passing).
+its own tests (see "Production guardrails self-audit" → 52/52 at that point, current total below).
 
 > Verified: the backend-served static page via `curl` (200 OK, correct HTML, data present); the
 > React app via a full `npm run build` (clean, zero errors) and a live dev-server run confirming
@@ -328,8 +329,51 @@ Seed data now includes 2 sample transcripts (one linked to Jane Doe, one anonymo
 → one row, updated content), the anonymous-call path, a malformed payload with no `call.id`
 (never crashes), both new REST endpoints (200/404/empty-array cases), and the global endpoint's
 envelope shape. Full suite was 50/50 at that point (2 more were added afterward for the
-`include_deleted` toggle - see the dashboard section above; **current total: 52/52**), with zero
-regressions to any existing test.
+`include_deleted` toggle - see the dashboard section above), with zero regressions to any
+existing test.
+
+**4. Appointment scheduling (post-registration bonus).** A new `Appointment` model
+(`prisma/schema.prisma`, required `patient_id` FK — unlike `Transcript`, an appointment can only
+ever be requested once a patient record exists) backs a mock booking flow — no real
+calendar/provider/conflict logic, it just records what the caller asked for:
+
+- **Prompt** (`prompt-templates.ts`): immediately after a successful *new* registration (not
+  after an `update_patient`), the assistant asks "Would you like me to schedule your initial
+  consultation?" before closing the call. If yes, it collects a specific date and a time
+  preference (morning/afternoon/evening or a specific time), explicitly steering the caller away
+  from relative phrases like "next Tuesday" toward an actual calendar date — `date-parser.ts`
+  only understands absolute dates, so this is a real constraint, not just prompt style.
+- **Tool**: `schedule_appointment` (`patient_id`, `preferred_date`, `preferred_time_slot`), calling
+  `appointment-service.ts` → `createAppointment`, which confirms the patient actually exists
+  (reusing `getPatientById`, turning what would otherwise be an opaque FK-constraint failure into
+  the same clean "couldn't find that patient" message used everywhere else) before booking.
+  `preferred_date` reuses the exact same spoken-date normalization as `date_of_birth`, but
+  validated in the *opposite* direction — must not be in the past, rather than not in the future.
+- **New module** `modules/appointment/` (controller route folded into `patient-controller.ts` as
+  `GET /patients/:id/appointments`, mirroring the transcripts route) — put in its own module
+  rather than directly in `patient-service.ts` to stay consistent with how `transcript/` was
+  structured, rather than growing `patient-service.ts` into a dumping ground for unrelated domains.
+- Covered by 16 automated tests: booking, both empty-array/404 cases on the new GET endpoint, a
+  past-date rejection (re-prompt, not a raw error, and confirmed no row was created), a missing
+  `patient_id` (graceful "finish registration first" message), and a well-formed but nonexistent
+  `patient_id` (clean not-found message, not a DB crash). **Full suite: 68/68 passing.**
+
+**5. Multi-language support (Spanish).** Entirely prompt-level (`prompt-templates.ts`) — no new
+code, no new tool. If the caller says anything indicating a language preference ("Hablo
+español," "¿Puedes hablar en español?," etc.), the assistant switches every part of the
+conversation — greetings, intake questions, error re-prompts, the read-back confirmation, and
+the closing — into fluent Spanish, and switches back if the caller does. The one hard rule: tool
+call arguments never change format regardless of conversation language — `sex` must still be
+exactly one of the four English enum strings the schema accepts (never "Femenino"), dates go to
+the tool exactly as spoken (the tool's own parser handles them), and `state` stays a 2-letter
+U.S. abbreviation. `preferred_language` is set to `"Spanish"` on `create_patient` so the stored
+record reflects the language the call was actually conducted in.
+
+> Not live-tested against a real bilingual call this session (would require re-publishing the
+> updated prompt to the Vapi assistant and placing another call) — the instruction is precise
+> and testable in principle, but "does the LLM actually comply" for a prompt-only feature can
+> only be confirmed by really trying it, which wasn't done here. Worth verifying before relying
+> on it for a demo.
 
 ## Known limitations / trade-offs
 
@@ -361,11 +405,17 @@ regressions to any existing test.
   tool's actual success result. Worth revisiting the prompt's error-handling section to make
   the "only report failure if the tool result says so" instruction more explicit.
 
-## Next steps (remaining bonus challenges)
+## Next steps
 
-- Mock appointment scheduling after successful registration.
-- Multi-language support ("Hablo español" → Spanish system prompt variant).
-- A proper automated test framework + CI.
-- Re-test the duplicate-detection voice flow and end-of-call-report transcript capture with a
-  real phone call (both verified via simulated webhook payloads so far, not a live call).
+All bonus challenges from the spec are now implemented. What's left is verification, not new
+scope:
+
+- A proper automated test framework + CI (still a hand-rolled script, see above).
+- Re-test the following live against a real phone call — all are code-complete and covered by
+  simulated-webhook tests, but not yet confirmed against Vapi's actual behavior in a live call:
+  duplicate-caller detection, end-of-call-report transcript capture, appointment scheduling, and
+  the Spanish language switch.
+- An "Appointments" view in the dashboard — the REST endpoint (`GET /patients/:id/appointments`)
+  exists and is tested, but the frontend doesn't yet surface it (the frontend already has a
+  Transcripts tab from the previous round).
 - A "Transcripts" view in the dashboard(s) over the new `GET /transcripts` endpoint.

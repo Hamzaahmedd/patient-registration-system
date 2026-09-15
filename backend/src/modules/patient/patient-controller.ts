@@ -15,6 +15,7 @@ import {
   updatePatient,
 } from "./patient-service";
 import { listTranscriptsForPatient } from "../transcript/transcript-service";
+import { listAppointmentsForPatient } from "../appointment/appointment-service";
 
 const patientIdParamSchema = z.string().uuid();
 
@@ -88,6 +89,18 @@ patientRouter.get(
     await getPatientById(patientId); // throws NotFoundError (404) if missing/soft-deleted
     const transcripts = await listTranscriptsForPatient(patientId);
     res.envelope(transcripts, 200);
+  }),
+);
+
+// GET /patients/:id/appointments - mock appointment bookings for a specific patient. Same
+// 404-vs-empty-array distinction as the transcripts route above.
+patientRouter.get(
+  "/:id/appointments",
+  asyncHandler(async (req, res) => {
+    const patientId = parsePatientId(req.params.id);
+    await getPatientById(patientId);
+    const appointments = await listAppointmentsForPatient(patientId);
+    res.envelope(appointments, 200);
   }),
 );
 

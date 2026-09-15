@@ -351,6 +351,164 @@ async function main() {
   });
   await req("DELETE", `/patients/${transcriptPatientId}`);
 
+  // ---------------------------------------------------------------------------------------
+  // Appointment scheduling (voice agent bonus)
+  // ---------------------------------------------------------------------------------------
+  const appointmentFixturePatient = {
+    first_name: "Owen",
+    last_name: "Castillo",
+    date_of_birth: "04/02/1988",
+    sex: "Male",
+    phone_number: "5556660000",
+    address_line_1: "7 Appointment Ave",
+    city: "Bookton",
+    state: "OR",
+    zip_code: "97201",
+  };
+  const appointmentPatientCreated = await req("POST", "/patients", appointmentFixturePatient);
+  assert(appointmentPatientCreated.status === 201, "Appointment-scheduling fixture patient created");
+  const appointmentPatientId: string = appointmentPatientCreated.json?.data?.patient_id;
+
+  // 20. No appointments yet -> empty array, 200
+  const emptyAppointments = await req("GET", `/patients/${appointmentPatientId}/appointments`);
+  assert(emptyAppointments.status === 200, "GET /patients/:id/appointments returns 200 before any bookings");
+  assert(
+    Array.isArray(emptyAppointments.json?.data) && emptyAppointments.json.data.length === 0,
+    "GET /patients/:id/appointments returns an empty array before any bookings",
+  );
+
+  // 21. GET appointments for a nonexistent patient -> 404
+  const appointmentsUnknownPatient = await req(
+    "GET",
+    "/patients/00000000-0000-0000-0000-000000000000/appointments",
+  );
+  assert(
+    appointmentsUnknownPatient.status === 404,
+    `GET /patients/<unknown-uuid>/appointments returns 404 (got ${appointmentsUnknownPatient.status})`,
+  );
+
+  // 22. schedule_appointment tool-call books a mock appointment
+  const scheduleCall = await req("POST", "/voice/webhook", {
+    message: {
+      type: "tool-calls",
+      toolCallList: [
+        {
+          id: "call_d",
+          function: {
+            name: "schedule_appointment",
+            arguments: {
+              patient_id: appointmentPatientId,
+              preferred_date: "12/15/2027",
+              preferred_time_slot: "Morning",
+            },
+          },
+        },
+      ],
+    },
+  });
+  assert(scheduleCall.status === 200, "schedule_appointment tool-call returns 200");
+  const scheduleResult: string = scheduleCall.json?.results?.[0]?.result ?? "";
+  assert(scheduleResult.includes("12/15/2027"), "schedule_appointment confirmation mentions the booked date");
+  assert(scheduleResult.includes("Morning"), "schedule_appointment confirmation mentions the time slot");
+
+  const afterBooking = await req("GET", `/patients/${appointmentPatientId}/appointments`);
+  assert(afterBooking.json?.data?.length === 1, "Booked appointment now appears under the patient");
+  assert(
+    afterBooking.json?.data?.[0]?.preferred_date === "12/15/2027",
+    "Booked appointment has the right preferred_date",
+  );
+  assert(
+    afterBooking.json?.data?.[0]?.preferred_time_slot === "Morning",
+    "Booked appointment has the right preferred_time_slot",
+  );
+
+  // 23. schedule_appointment with a past date is rejected (validation), no appointment created
+  const scheduleCallPastDate = await req("POST", "/voice/webhook", {
+    message: {
+      type: "tool-calls",
+      toolCallList: [
+        {
+          id: "call_e",
+          function: {
+            name: "schedule_appointment",
+            arguments: {
+              patient_id: appointmentPatientId,
+              preferred_date: "01/01/2020",
+              preferred_time_slot: "Afternoon",
+            },
+          },
+        },
+      ],
+    },
+  });
+  const pastDateResult: string = scheduleCallPastDate.json?.results?.[0]?.result ?? "";
+  assert(
+    pastDateResult.toLowerCase().includes("past") || pastDateResult.toLowerCase().includes("repeat"),
+    "schedule_appointment with a past date returns a re-prompt, not a raw error",
+  );
+  const afterPastDateAttempt = await req("GET", `/patients/${appointmentPatientId}/appointments`);
+  assert(
+    afterPastDateAttempt.json?.data?.length === 1,
+    "A rejected past-date request does not create an appointment row",
+  );
+
+  // 24. schedule_appointment with no patient_id is handled gracefully (registration not done yet)
+  const scheduleCallNoPatientId = await req("POST", "/voice/webhook", {
+    message: {
+      type: "tool-calls",
+      toolCallList: [
+        {
+          id: "call_f",
+          function: {
+            name: "schedule_appointment",
+            arguments: { preferred_date: "12/15/2027", preferred_time_slot: "Morning" },
+          },
+        },
+      ],
+    },
+  });
+  assert(
+    scheduleCallNoPatientId.status === 200,
+    "schedule_appointment with no patient_id still returns 200 (never crashes)",
+  );
+  const noPatientIdResult: string = scheduleCallNoPatientId.json?.results?.[0]?.result ?? "";
+  assert(
+    noPatientIdResult.toLowerCase().includes("registration"),
+    "schedule_appointment with no patient_id asks to finish registration first",
+  );
+
+  // 25. schedule_appointment for a well-formed but nonexistent patient_id fails cleanly
+  const scheduleCallUnknownPatient = await req("POST", "/voice/webhook", {
+    message: {
+      type: "tool-calls",
+      toolCallList: [
+        {
+          id: "call_g",
+          function: {
+            name: "schedule_appointment",
+            arguments: {
+              patient_id: "00000000-0000-0000-0000-000000000000",
+              preferred_date: "12/15/2027",
+              preferred_time_slot: "Morning",
+            },
+          },
+        },
+      ],
+    },
+  });
+  assert(
+    scheduleCallUnknownPatient.status === 200,
+    "schedule_appointment for an unknown patient_id still returns 200 (never crashes)",
+  );
+  const unknownPatientResult: string = scheduleCallUnknownPatient.json?.results?.[0]?.result ?? "";
+  assert(
+    unknownPatientResult.toLowerCase().includes("couldn't find"),
+    "schedule_appointment for an unknown patient_id returns a clean not-found message",
+  );
+
+  await prisma.appointment.deleteMany({ where: { patient_id: appointmentPatientId } });
+  await req("DELETE", `/patients/${appointmentPatientId}`);
+
   server.close();
   await disconnectDatabase();
 

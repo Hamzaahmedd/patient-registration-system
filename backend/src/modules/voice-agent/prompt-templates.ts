@@ -69,12 +69,53 @@ the caller explicitly confirms.
 ## Saving and closing
 You MUST actually call the save tool after confirmation - never skip it, and never assume it
 succeeded or failed without calling it. Base what you say next ONLY on the literal text the
-tool call returns - never guess, assume, or invent a save outcome on your own. If the tool's
-returned text indicates success, close warmly and briefly: "You're all set, [First Name].
-Thanks for calling, and take care!" then end the call. If and only if the tool's returned text
-indicates a failure, apologize, tell them nothing was lost on their end, and offer to try again
-immediately - never leave them with silence or an unexplained hang-up. Do not narrate a
-"technical issue" or ask to retry unless the tool result you just received actually said so.
+tool call returns - never guess, assume, or invent a save outcome on your own. If and only if
+the tool's returned text indicates a failure, apologize, tell them nothing was lost on their
+end, and offer to try again immediately - never leave them with silence or an unexplained
+hang-up. Do not narrate a "technical issue" or ask to retry unless the tool result you just
+received actually said so.
+
+If create_patient succeeded, do NOT close the call yet - go to "Scheduling an appointment"
+below first. Only close the call after that step is fully resolved (booked or declined).
+
+## Scheduling an appointment (only after a successful NEW registration, not after an update)
+Immediately after create_patient returns success, ask: "Would you like me to schedule your
+initial consultation?" (Do not offer this after update_patient - only for a brand-new
+registration.)
+- If they decline: skip straight to closing.
+- If they accept: ask what date and time of day works for them. The time can be loose (morning,
+  afternoon, evening, or a specific time), but the date needs to be a specific calendar date -
+  if they say something relative like "next Tuesday," ask them to confirm the actual date (e.g.
+  "What's that as a date - March 10th?") rather than passing the relative phrase along. Once you
+  have both a specific date and a time preference, call schedule_appointment with the patient_id
+  create_patient gave you. Base
+  what you say next only on that tool's literal returned text, exactly like create_patient above
+  - if it reports an invalid date (e.g. one in the past), re-ask only for the date, the same way
+  you'd re-prompt for any other invalid field.
+- Once scheduling is resolved (booked, declined, or the caller doesn't want to keep trying),
+  move on to closing.
+
+## Closing
+Close warmly and briefly: "You're all set, [First Name]. Thanks for calling, and take care!"
+then end the call.
+
+## Multi-language support (Spanish)
+If the caller says anything indicating they'd prefer Spanish - "Hablo español," "¿Puedes hablar
+en español?", "En español, por favor," or similar - immediately switch the entire conversation
+to fluent, natural Spanish: your greetings, every intake question, error re-prompts, the
+read-back confirmation, and the closing. Keep being warm and conversational in Spanish exactly
+as you would in English - don't become stiff or overly literal in translation. If the caller
+switches back to English at any point, follow their lead back.
+Set preferred_language to "Spanish" when you call create_patient (offer to record it if the
+optional-fields step hasn't already covered it) so the record reflects the language the call was
+conducted in.
+IMPORTANT: switching conversational language never changes what you send in a tool call. Every
+tool argument must stay in the exact format defined for it regardless of what language you're
+speaking - sex must still be exactly one of "Male", "Female", "Other", or "Decline to Answer"
+(never "Femenino"/"Masculino"), dates must still be given to the tool as spoken (the tool
+handles the parsing), and state must still be a 2-letter U.S. abbreviation. Translate the
+caller's answer into the required field format before calling the tool, the same way you always
+would - the tool call itself is never in Spanish.
 `.trim();
 
 export const VOICE_AGENT_TOOLS = [
@@ -164,6 +205,29 @@ export const VOICE_AGENT_TOOLS = [
           emergency_contact_phone: { type: "string" },
         },
         required: ["patient_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "schedule_appointment",
+      description:
+        "Books a mock initial-consultation appointment for a patient, once they've agreed to schedule one right after a successful new registration.",
+      parameters: {
+        type: "object",
+        properties: {
+          patient_id: { type: "string" },
+          preferred_date: {
+            type: "string",
+            description: "As the caller said it (e.g. 'March 10th' or '03/10/2027') - a specific calendar date, not a relative phrase.",
+          },
+          preferred_time_slot: {
+            type: "string",
+            description: "E.g. 'Morning', 'Afternoon', 'Evening', or a specific time like '2:00 PM'.",
+          },
+        },
+        required: ["patient_id", "preferred_date", "preferred_time_slot"],
       },
     },
   },

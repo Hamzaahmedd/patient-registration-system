@@ -6,6 +6,7 @@ import {
   handleCreatePatientTool,
   handleEndOfCallReport,
   handleLookupPatientByPhoneTool,
+  handleScheduleAppointmentTool,
   handleUpdatePatientTool,
 } from "./voice-service";
 
@@ -46,6 +47,7 @@ const TOOL_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<s
   lookup_patient_by_phone: handleLookupPatientByPhoneTool,
   create_patient: handleCreatePatientTool,
   update_patient: handleUpdatePatientTool,
+  schedule_appointment: handleScheduleAppointmentTool,
 };
 
 function verifyWebhookSecret(req: Request): boolean {

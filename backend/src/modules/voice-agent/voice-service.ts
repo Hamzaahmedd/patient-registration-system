@@ -6,6 +6,8 @@ import { createPatientSchema, updatePatientSchema } from "../patient/patient-sch
 import { createPatient, findPatientByPhoneNumber, updatePatient } from "../patient/patient-service";
 import { createTranscriptSchema } from "../transcript/transcript-schema";
 import { createTranscript } from "../transcript/transcript-service";
+import { createAppointmentSchema } from "../appointment/appointment-schema";
+import { createAppointment } from "../appointment/appointment-service";
 import {
   buildKnownCallerContext,
   buildReturningCallerFirstMessage,
@@ -30,11 +32,15 @@ function describeValidationError(error: ZodError): string {
 /** Pre-processes the raw tool-call arguments coming from Vapi before they hit Zod. */
 function normalizeVoiceInput(raw: Record<string, unknown>): Record<string, unknown> {
   const normalized = { ...raw };
-  if (typeof normalized.date_of_birth === "string") {
-    const parsed = parseSpokenDate(normalized.date_of_birth);
-    // Leave the raw value in place if we couldn't parse it - the strict Zod regex will
-    // then reject it with a clear "not a valid MM/DD/YYYY date" message for the voice agent to relay.
-    if (parsed) normalized.date_of_birth = parsed;
+  // Both date_of_birth (create/update_patient) and preferred_date (schedule_appointment) use
+  // the same spoken-date-to-MM/DD/YYYY normalization before their respective strict Zod checks.
+  for (const dateField of ["date_of_birth", "preferred_date"]) {
+    if (typeof normalized[dateField] === "string") {
+      const parsed = parseSpokenDate(normalized[dateField] as string);
+      // Leave the raw value in place if we couldn't parse it - the strict Zod regex will then
+      // reject it with a clear "not a valid MM/DD/YYYY date" message for the voice agent to relay.
+      if (parsed) normalized[dateField] = parsed;
+    }
   }
   return normalized;
 }
@@ -206,6 +212,35 @@ export async function handleCreatePatientTool(rawArgs: Record<string, unknown>):
     }
     logger.error({ err: error }, "voice_create_patient_failed");
     return "I'm sorry, I ran into a problem saving your registration. Could we try that last step again?";
+  }
+}
+
+/**
+ * Appointment scheduling bonus: offered once, right after a successful new registration. A
+ * mock booking - no real calendar/provider assignment - just records what the caller asked for.
+ */
+export async function handleScheduleAppointmentTool(rawArgs: Record<string, unknown>): Promise<string> {
+  const patientId = rawArgs.patient_id;
+  if (typeof patientId !== "string") {
+    return "I don't have a patient record to schedule an appointment for yet - let's finish registration first.";
+  }
+  try {
+    const input = createAppointmentSchema.parse(normalizeVoiceInput(rawArgs));
+    const appointment = await createAppointment(input);
+    logger.info(
+      { appointment_id: appointment.id, patient_id: appointment.patient_id },
+      "appointment_scheduled_via_voice_agent",
+    );
+    return `Your initial consultation is booked for ${appointment.preferred_date}, ${appointment.preferred_time_slot}. We'll follow up to confirm the exact time.`;
+  } catch (error) {
+    if (error instanceof ZodError) {
+      return describeValidationError(error);
+    }
+    if (error instanceof NotFoundError) {
+      return "I couldn't find that patient record to schedule an appointment for.";
+    }
+    logger.error({ err: error }, "voice_schedule_appointment_failed");
+    return "I'm sorry, I ran into a problem booking that appointment. Could we try that last step again?";
   }
 }
 
