@@ -22,7 +22,6 @@ export const env = {
     .map((origin) => origin.trim())
     .filter(Boolean),
   vapi: {
-    apiKey: process.env.VAPI_API_KEY ?? "",
     webhookSecret: process.env.VAPI_WEBHOOK_SECRET ?? "",
   },
 };

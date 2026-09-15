@@ -6,9 +6,11 @@
  *
  * Run with: npm test
  */
+import crypto from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { createApp } from "../app";
 import { disconnectDatabase, prisma } from "../config/database";
+import { env } from "../config/env";
 
 let passed = 0;
 let failed = 0;
@@ -24,15 +26,23 @@ function assert(condition: unknown, message: string): asserts condition {
 }
 
 async function main() {
+  // The test suite must behave identically regardless of what's actually configured in the
+  // developer's .env - most tests below call /voice/webhook without signing the request, which
+  // only works while signature verification is disabled. Force it off here (restored at the end
+  // of main, and temporarily re-enabled with a known test secret in the dedicated HMAC section
+  // near the bottom of this file) rather than depending on VAPI_WEBHOOK_SECRET being unset.
+  const realWebhookSecret = env.vapi.webhookSecret;
+  env.vapi.webhookSecret = "";
+
   const app = createApp();
   const server = app.listen(0);
   const { port } = server.address() as AddressInfo;
   const base = `http://127.0.0.1:${port}`;
 
-  async function req(method: string, path: string, body?: unknown) {
+  async function req(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>) {
     const res = await fetch(`${base}${path}`, {
       method,
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...extraHeaders },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     const json = (await res.json().catch(() => null)) as any;
@@ -508,6 +518,51 @@ async function main() {
 
   await prisma.appointment.deleteMany({ where: { patient_id: appointmentPatientId } });
   await req("DELETE", `/patients/${appointmentPatientId}`);
+
+  // ---------------------------------------------------------------------------------------
+  // Vapi webhook HMAC signature verification
+  // ---------------------------------------------------------------------------------------
+  // env.vapi.webhookSecret is read live on every request (not cached at app-creation time), so
+  // it's safe to toggle it here for just this section - every other test in this file runs with
+  // verification disabled (forced empty at the top of main), independent of whatever is actually
+  // configured in .env.
+  env.vapi.webhookSecret = "test-hmac-secret-for-verification";
+
+  function signPayload(bodyString: string, timestamp: string): string {
+    return crypto
+      .createHmac("sha256", env.vapi.webhookSecret)
+      .update(`${timestamp}.${bodyString}`)
+      .digest("hex");
+  }
+
+  const lookupBody = {
+    message: {
+      type: "tool-calls",
+      toolCallList: [
+        { id: "call_h", function: { name: "lookup_patient_by_phone", arguments: { phone_number: "9999999999" } } },
+      ],
+    },
+  };
+  const lookupBodyString = JSON.stringify(lookupBody);
+  const timestamp = String(Date.now());
+
+  const validSignature = signPayload(lookupBodyString, timestamp);
+  const signedRequest = await req("POST", "/voice/webhook", lookupBody, {
+    "x-signature": validSignature,
+    "x-timestamp": timestamp,
+  });
+  assert(signedRequest.status === 200, "Valid HMAC signature is accepted (200)");
+
+  const tamperedRequest = await req("POST", "/voice/webhook", lookupBody, {
+    "x-signature": "0".repeat(64),
+    "x-timestamp": timestamp,
+  });
+  assert(tamperedRequest.status === 401, "Tampered/wrong HMAC signature is rejected (401)");
+
+  const missingHeadersRequest = await req("POST", "/voice/webhook", lookupBody);
+  assert(missingHeadersRequest.status === 401, "Missing signature/timestamp headers are rejected (401)");
+
+  env.vapi.webhookSecret = realWebhookSecret;
 
   server.close();
   await disconnectDatabase();

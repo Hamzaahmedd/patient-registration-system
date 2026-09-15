@@ -23,7 +23,17 @@ export function createApp() {
     }),
   );
 
-  app.use(express.json());
+  // `verify` stashes the exact raw bytes of the request body on req.rawBody before Express
+  // parses it - needed to verify Vapi's HMAC webhook signature, which is computed over the raw
+  // body text. Re-serializing the parsed JSON would not reliably reproduce the same bytes
+  // (whitespace/key-order can differ), so the signature check needs this raw copy specifically.
+  app.use(
+    express.json({
+      verify: (req, _res, buf) => {
+        (req as Request & { rawBody?: Buffer }).rawBody = buf;
+      },
+    }),
+  );
   app.use(pinoHttp({ logger }));
 
   app.get("/health", (_req: Request, res: Response) => {

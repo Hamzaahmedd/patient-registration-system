@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { env } from "../../config/env";
 import { logger } from "../../config/logger";
@@ -50,10 +51,33 @@ const TOOL_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<s
   schedule_appointment: handleScheduleAppointmentTool,
 };
 
+/**
+ * Verifies Vapi's HMAC request signature (its "Custom Credential" server-auth mechanism, as
+ * configured in the Vapi dashboard's Server Configuration screen):
+ *   signature = hex(HMAC-SHA256(secretKey, `${timestamp}.${rawBody}`))
+ * sent as the `x-signature` header, with the timestamp in `x-timestamp` - matching the default
+ * "Signature Header"/"Timestamp Header"/"Payload Format" fields in that dashboard screen.
+ *
+ * Requires the exact raw request body bytes (see app.ts's express.json({ verify }) - re-parsing
+ * and re-stringifying req.body would not reliably reproduce the same bytes Vapi signed.
+ */
 function verifyWebhookSecret(req: Request): boolean {
   if (!env.vapi.webhookSecret) return true; // not configured -> skip check (documented in README)
-  const provided = req.header("x-vapi-secret");
-  return provided === env.vapi.webhookSecret;
+
+  const signature = req.header("x-signature");
+  const timestamp = req.header("x-timestamp");
+  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+  if (!signature || !timestamp || !rawBody) return false;
+
+  const payload = `${timestamp}.${rawBody.toString("utf8")}`;
+  const expected = crypto.createHmac("sha256", env.vapi.webhookSecret).update(payload).digest("hex");
+
+  const expectedBuf = Buffer.from(expected, "hex");
+  const providedBuf = Buffer.from(signature, "hex");
+  // Buffer.from silently returns a shorter buffer for malformed hex, which would make lengths
+  // mismatch and correctly fail below - timingSafeEqual itself requires equal-length buffers.
+  if (expectedBuf.length !== providedBuf.length) return false;
+  return crypto.timingSafeEqual(expectedBuf, providedBuf);
 }
 
 function parseArguments(raw: VapiToolCall["function"]["arguments"]): Record<string, unknown> {

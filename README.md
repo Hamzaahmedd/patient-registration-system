@@ -205,14 +205,49 @@ transcripts endpoint above. No `PUT`/`DELETE` — bookings are mock and append-o
 | `PORT` | No (default 3000) | HTTP port. |
 | `NODE_ENV` | No | `development` / `production`. |
 | `CORS_ORIGINS` | No (defaults to Vite's `:5173` on localhost/127.0.0.1) | Comma-separated origins allowed to call this API cross-origin — the React frontend. |
-| `VAPI_API_KEY` | Only if provisioning assistants via Vapi's API instead of the dashboard | Not read by the running server today — reserved for a future automation script. |
-| `VAPI_WEBHOOK_SECRET` | Recommended | If set, `/voice/webhook` requires a matching `x-vapi-secret` header; if left empty, the check is skipped (documented trade-off below). |
+| `VAPI_WEBHOOK_SECRET` | Recommended | HMAC secret key. If set, `/voice/webhook` requires a valid signature (see "Webhook signature verification" below); if left empty, the check is skipped (documented trade-off below). |
 
 **Frontend** (`frontend/.env`, see `frontend/.env.example`):
 
 | Var | Required | Purpose |
 |---|---|---|
 | `VITE_API_BASE_URL` | No | Leave unset for local dev (requests go through the Vite proxy to `:3000`). Set only when serving the built frontend from somewhere that can't proxy to the backend — requests then go directly to this URL, which must be listed in the backend's `CORS_ORIGINS`. |
+
+## Webhook signature verification
+
+`/voice/webhook` can require every incoming request to carry a valid HMAC-SHA256 signature,
+matching Vapi's dashboard **Server Configuration → Custom Credential** screen:
+
+- **Secret Key**: same value as `VAPI_WEBHOOK_SECRET` in the backend's `.env`.
+- **Algorithm**: `SHA256`
+- **Signature Header**: `x-signature`
+- **Timestamp Header**: `x-timestamp`
+- **Payload Format**: `{timestamp}.{body}` (this exact string, timestamp + `.` + the raw request
+  body, is what gets HMAC'd)
+- **Signature Encoding**: `Hex`
+- **Secret Is Base64**: off (the secret key is used as a plain UTF-8 string, not decoded from base64)
+- **Include Timestamp**: on
+
+`voice-controller.ts`'s `verifyWebhookSecret` recomputes `hex(HMAC-SHA256(secret,
+"{timestamp}.{rawBody}"))` and compares it to the `x-signature` header using
+`crypto.timingSafeEqual` (not `===`, to avoid a timing side-channel). This requires the exact
+raw request body bytes, which `app.ts` captures via `express.json({ verify })` before Express
+parses them — re-serializing `req.body` back to JSON would not reliably reproduce the same bytes
+Vapi signed.
+
+If `VAPI_WEBHOOK_SECRET` is unset, verification is skipped entirely and any request is accepted
+— fine for a private demo behind an unguessable ngrok URL, not for anything beyond that (see
+Known limitations). Generate a secret with e.g. `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`,
+set it as `VAPI_WEBHOOK_SECRET` in both your deployment's environment variables and the Vapi
+credential screen above.
+
+> **Note on an earlier version of this doc**: this project originally assumed Vapi sent the raw
+> secret back verbatim in a simple `x-vapi-secret` header, matching a naive `===` string
+> comparison. That assumption was wrong — Vapi's actual dashboard only offers this HMAC-signing
+> credential mechanism, which is more secure anyway (the secret itself is never transmitted, and
+> the timestamp discourages replay). The backend and this doc were both corrected accordingly,
+> and the fix was verified live: an unsigned request now gets a `401`, and a correctly computed
+> signature gets a `200`.
 
 ## Voice ↔ database integration
 
@@ -246,11 +281,13 @@ Checked against the codebase (not just design intent) before moving to bonus fea
 1. **PII redaction was silently eating the required log.** The original redact config used
    blanket wildcards (`*.phone_number`, `*.email`, etc.) that would have redacted the very
    "final collected data payload" the spec requires to be logged in full. Fixed:
-   `pii-sanitizer.ts` now redacts only real ambient-log secret surfaces (the Vapi webhook
-   secret header, an `Authorization` header if ever added) — nothing else in this app logs raw
-   patient fields outside the one intentional, unmasked payload log, so nothing else needs
-   redacting. Verified with a live request: the payload log now shows full field values, and a
-   test `x-vapi-secret` header value came back as `[REDACTED]`.
+   `pii-sanitizer.ts` now redacts only real ambient-log secret surfaces — nothing else in this
+   app logs raw patient fields outside the one intentional, unmasked payload log, so nothing
+   else needs redacting. Verified with a live request: the payload log now shows full field
+   values. (At the time this was fixed, webhook auth was a raw `x-vapi-secret` header, which was
+   also verified to come back `[REDACTED]`; that auth mechanism has since been replaced by HMAC
+   request signing — see "Webhook signature verification" above — which sends no raw secret
+   over the wire to redact in the first place.)
 2. **The voice webhook had no top-level exception guard.** Each tool handler
    (`handleCreatePatientTool`/`handleUpdatePatientTool`) already caught its own DB/validation
    errors and returned a speakable message, but nothing wrapped the route handler itself — an

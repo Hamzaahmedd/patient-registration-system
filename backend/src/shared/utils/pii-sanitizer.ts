@@ -7,13 +7,12 @@
  * deliberately NOT masked or redacted.
  *
  * What Pino's `redact` option (config/logger.ts) protects instead is everything else: any
- * secret credential that could otherwise leak into ambient logs (the Vapi webhook shared
- * secret header, an Authorization header if one is ever added). No other code path in this
- * app logs raw patient fields, so there is no other ambient PII surface to redact today - this
- * list is a deliberate, narrow allowlist rather than a blanket wildcard, specifically so it
+ * secret credential that could otherwise leak into ambient logs. Vapi's webhook auth
+ * (voice-controller.ts) uses HMAC request signing - the `x-signature`/`x-timestamp` headers
+ * are not secrets themselves (a signature can't be reversed to reveal the key), so they don't
+ * need redacting; an Authorization header would, if one is ever added. No other code path in
+ * this app logs raw patient fields, so there is no other ambient PII surface to redact today -
+ * this list is a deliberate, narrow allowlist rather than a blanket wildcard, specifically so it
  * cannot accidentally strip the one log the spec requires to be complete.
  */
-export const PINO_REDACT_PATHS = [
-  'req.headers["x-vapi-secret"]',
-  "req.headers.authorization",
-];
+export const PINO_REDACT_PATHS = ["req.headers.authorization"];
