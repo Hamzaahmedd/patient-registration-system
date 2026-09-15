@@ -11,6 +11,12 @@ persistent Neon Postgres database, built as a modular monolith.
 > These are only live while the developer's local server + ngrok tunnel are running for this
 > review session. For a durable link, redeploy `backend/` to Render/Fly.io and update the
 > Vapi assistant's Server URL accordingly (see "Known limitations" below).
+>
+> **If a call to this number fails or the assistant seems unresponsive:** the webhook now
+> requires a valid HMAC signature (see "Webhook signature verification"), and that credential's
+> live attachment to this assistant hasn't been confirmed with a real call yet — see the
+> matching bullet under "Known limitations." A `401` on our end would look like the assistant
+> just not responding to anything.
 
 ## Architecture
 
@@ -43,6 +49,9 @@ REST clients ──▶  /patients  (backend/src/modules/patient)┘
   request are validated and persisted identically.
 - `modules/transcript/` — REST controller, Zod schema, service for call transcripts/analytics.
   `voice-agent` calls its service directly from `handleEndOfCallReport`, same pattern as above.
+- `modules/appointment/` — Zod schema, service for mock appointment bookings; its one REST route
+  (`GET /patients/:id/appointments`) lives in `patient-controller.ts` for the same reason
+  `transcript`'s per-patient route does, rather than a standalone controller for one endpoint.
 - `shared/` — cross-cutting concerns used by both modules: the `{ data, error }` response
   envelope, centralized error handling, spoken-date parsing, and PII-safe logging.
 - `config/` — environment loading, the singleton Prisma client, and the Pino logger.
@@ -63,7 +72,7 @@ REST clients ──▶  /patients  (backend/src/modules/patient)┘
 ```
 backend/
 ├── prisma/
-│   ├── schema.prisma        # Patient + Transcript models, constraints, indexes
+│   ├── schema.prisma        # Patient, Transcript, Appointment models, constraints, indexes
 │   └── seed.ts               # 2 demo patients + 2 demo transcripts
 ├── public/
 │   └── dashboard/index.html  # Bonus: static read-only dashboard, served at /dashboard
@@ -72,7 +81,8 @@ backend/
 │   ├── modules/
 │   │   ├── patient/           # REST: controller, service, zod schema, types
 │   │   ├── voice-agent/       # Vapi webhook controller, service, prompt + tool defs
-│   │   └── transcript/        # REST: controller, service, zod schema, types
+│   │   ├── transcript/        # REST: controller, service, zod schema, types
+│   │   └── appointment/       # service, zod schema, types (route lives in patient-controller.ts)
 │   ├── shared/
 │   │   ├── middleware/        # response envelope, centralized error handler
 │   │   └── utils/              # spoken date parser, PII masking/redaction
@@ -121,7 +131,12 @@ npm test           # boots the app in-process and exercises every endpoint + edg
    defined (see "Vapi setup gotcha" under Known limitations — easy to miss).
 4. Expose your local server publicly (`ngrok http 3000`) and set the assistant's server/webhook
    URL to `https://<your-ngrok-domain>/voice/webhook`.
-5. Attach a phone number to the assistant and call it.
+5. Optional but recommended: set `VAPI_WEBHOOK_SECRET` in `.env`, then create a matching HMAC
+   Custom Credential in Vapi's dashboard and attach it as this assistant's server auth — see
+   "Webhook signature verification" for the exact field values. **If you do this, place a test
+   call afterward** to confirm the credential is actually wired up before trusting it (see
+   Known limitations — a misconfigured credential fails silently as an unresponsive assistant).
+6. Attach a phone number to the assistant and call it.
 
 ### 6. Frontend dashboard (bonus, optional)
 ```bash
@@ -315,7 +330,7 @@ All 6 bonus challenges from the spec are implemented:
 | 3 | Call recording/transcript | ✅ |
 | 4 | Appointment scheduling | ✅ |
 | 5 | Multi-language support (Spanish) | ✅ prompt-level |
-| 6 | Automated tests | ✅ 68 tests, hand-rolled script (not Jest/Vitest — see note under #6) |
+| 6 | Automated tests | ✅ 71 tests, hand-rolled script (not Jest/Vitest — see note under #6) |
 
 **1. Duplicate-caller detection (voice integration) — two complementary mechanisms:**
 
@@ -429,7 +444,8 @@ calendar/provider/conflict logic, it just records what the caller asked for:
 - Covered by 16 automated tests: booking, both empty-array/404 cases on the new GET endpoint, a
   past-date rejection (re-prompt, not a raw error, and confirmed no row was created), a missing
   `patient_id` (graceful "finish registration first" message), and a well-formed but nonexistent
-  `patient_id` (clean not-found message, not a DB crash). **Full suite: 68/68 passing.**
+  `patient_id` (clean not-found message, not a DB crash). Full suite was 68/68 at that point (3
+  more were added afterward for webhook signature verification — see #6 below; current total: 71/71).
 
 **5. Multi-language support (Spanish).** Entirely prompt-level (`prompt-templates.ts`) — no new
 code, no new tool. If the caller says anything indicating a language preference ("Hablo
@@ -448,15 +464,22 @@ record reflects the language the call was actually conducted in.
 > only be confirmed by really trying it, which wasn't done here. Worth verifying before relying
 > on it for a demo.
 
-**6. Automated tests.** `backend/src/tests/run-tests.ts` — 68 tests, run via `npm test`, boot
-the real Express app in-process against the configured database and exercise every REST
+**6. Automated tests.** `backend/src/tests/run-tests.ts` — **71 tests**, run via `npm test`,
+boot the real Express app in-process against the configured database and exercise every REST
 endpoint and every voice-webhook path with real HTTP/fetch calls: create/read/update/soft-delete
 patients, every validation edge case (future DOB, malformed phone, missing required field), the
 `include_deleted` toggle, both duplicate-detection mechanisms, call transcripts (linking,
-idempotent retry, the anonymous-call path), and appointment scheduling (booking, past-date
-rejection, missing/unknown `patient_id`). All fixture data it creates is cleaned up at the end
-of each covered section (soft-deleted via the real API, or hard-deleted directly for data with
-no delete endpoint, like transcripts) so repeated runs don't pollute the shared dev database.
+idempotent retry, the anonymous-call path), appointment scheduling (booking, past-date
+rejection, missing/unknown `patient_id`), and — added when webhook auth moved to HMAC signing
+(see "Webhook signature verification" above) — a valid signature being accepted, a
+tampered/wrong signature being rejected with `401`, and missing signature/timestamp headers
+being rejected with `401`. Since most of the suite calls `/voice/webhook` unsigned, `main()`
+forces `env.vapi.webhookSecret` to `""` for the run regardless of what's actually configured in
+`.env`, and only re-enables it (with a test-only secret) for those three dedicated tests — so
+the suite's behavior doesn't depend on what a given developer happens to have configured
+locally. All fixture data it creates is cleaned up at the end of each covered section
+(soft-deleted via the real API, or hard-deleted directly for data with no delete endpoint, like
+transcripts) so repeated runs don't pollute the shared dev database.
 
 > Satisfies the spec's ask ("unit or integration tests for the API layer") in substance, but
 > it's a hand-rolled script asserting against real HTTP responses, not a framework like
@@ -464,11 +487,35 @@ no delete endpoint, like transcripts) so repeated runs don't pollute the shared 
 > trade-off, not hidden: see "Known limitations" and "Next steps" below for what a follow-up
 > pass would add.
 
+Beyond the 71-test suite, a full simulated voice conversation was also run once against the
+live dev server with real HMAC-signed requests (standing in for an actual phone call): call
+start (`assistant-request`) → `lookup_patient_by_phone` (no match) → `create_patient` with a
+spoken date ("June 1st 1991", correctly parsed to `06/01/1991`) → `schedule_appointment` →
+`end-of-call-report` (transcript correctly linked to the new patient via phone number) →
+confirmed via `GET /patients/:id`, `/appointments`, and `/transcripts` that every field
+persisted matches what was sent. All test data was cleaned up afterward. The HMAC scheme itself
+was independently cross-checked against Vapi's public documentation and a third-party
+integration guide (not just mirrored from the dashboard screenshot) — both confirm
+`hex(HMAC-SHA256(secret, "{timestamp}.{rawBody}"))` in the `x-signature` header is exactly
+Vapi's documented behavior for this credential configuration.
+
 ## Known limitations / trade-offs
 
 - **US states only** (50 + DC) — territories (PR, GU, VI, etc.) are out of scope.
-- **`VAPI_WEBHOOK_SECRET` is optional** — if unset, the webhook accepts any caller. Fine for a
-  time-boxed demo behind a private ngrok URL; a production deployment should make this mandatory.
+- **`VAPI_WEBHOOK_SECRET` is optional by design** — if unset, the webhook accepts any caller
+  unverified. In this project's own dev setup it **is** currently set (matching a credential
+  configured in Vapi's dashboard, see "Webhook signature verification"), so unsigned requests
+  are actively rejected right now — a fresh clone starts with it unset until you configure both
+  sides.
+- **The HMAC credential's live attachment to the Vapi assistant has not been confirmed with a
+  real call.** The signature math itself is verified thoroughly (71 automated tests, a full
+  simulated conversation against the live server with correctly-signed requests, and
+  cross-checked against Vapi's own documentation for this exact scheme) — but whether Vapi is
+  actually configured to *send* matching signatures on real calls (i.e. whether the credential
+  you save in their dashboard is correctly selected as this assistant's server auth) can only be
+  confirmed by placing one. If it's misconfigured, real calls would get silently rejected with
+  `401` and the assistant would behave as if the webhook were down. Worth placing one test call
+  after saving the Vapi credential, before relying on this for a demo.
 - **ngrok for local dev** — a Render/Fly.io deploy gets a stable public URL but costs setup time;
   documented as the next step rather than done up front, per the "smart trade-offs under time
   pressure" evaluation criterion.
@@ -496,8 +543,14 @@ not new scope:
 - Migrate the hand-rolled test script to a real framework (Jest/Vitest) with CI wiring.
 - Re-test the following live against a real phone call — all are code-complete and covered by
   simulated-webhook tests, but not yet confirmed against Vapi's actual behavior in a live call:
-  duplicate-caller detection, end-of-call-report transcript capture, appointment scheduling, and
-  the Spanish language switch.
+  duplicate-caller detection, end-of-call-report transcript capture, appointment scheduling, the
+  Spanish language switch, and — highest priority, since it would break everything above if
+  wrong — that the HMAC credential is actually attached to this assistant's server URL and
+  producing matching signatures (see "Known limitations").
+- Add timestamp-freshness enforcement to the HMAC check (reject requests with an old
+  `x-timestamp`) to realize its full replay-attack protection — not done yet since Vapi's
+  timestamp units (seconds vs. milliseconds) haven't been confirmed against a real request, and
+  guessing wrong would start rejecting legitimate calls.
 - An "Appointments" view in the dashboard — the REST endpoint (`GET /patients/:id/appointments`)
   exists and is tested, but the frontend doesn't yet surface it (the frontend's Transcripts tab
   over `GET /transcripts` was built in an earlier round and already works).
