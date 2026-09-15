@@ -113,10 +113,21 @@ npm test           # boots the app in-process and exercises every endpoint + edg
 1. Create a Vapi assistant.
 2. Paste `backend/src/modules/voice-agent/prompt-templates.ts` → `REGISTRATION_SYSTEM_PROMPT`
    into the assistant's system message.
-3. Register `VOICE_AGENT_TOOLS` (same file) as the assistant's function/tool definitions.
+3. Register `VOICE_AGENT_TOOLS` (same file) as the assistant's function/tool definitions, **and**
+   make sure they're also selected in the assistant's Model config's tool selector, not just
+   defined (see "Vapi setup gotcha" under Known limitations — easy to miss).
 4. Expose your local server publicly (`ngrok http 3000`) and set the assistant's server/webhook
    URL to `https://<your-ngrok-domain>/voice/webhook`.
 5. Attach a phone number to the assistant and call it.
+
+### 6. Frontend dashboard (bonus, optional)
+```bash
+cd frontend
+npm install
+npm run dev         # http://localhost:5173 - requires the backend running on :3000 first
+```
+See [frontend/README.md](frontend/README.md) for details. A zero-build alternative is also
+served directly by the backend at `http://localhost:3000/dashboard`.
 
 ## REST API
 
@@ -213,18 +224,28 @@ and ID, an unknown number correctly returned "no existing record," and a follow-
 `update_patient` call using the returned ID correctly updated that patient — all without
 touching the REST API's behavior (full 19-test suite re-run and still green afterward).
 
-**2. Patient dashboard (read-only web UI).** A single self-contained static page at
-`GET /dashboard` (`backend/public/dashboard/index.html`, served via `express.static` mounted in
-`app.ts` — no new backend module needed, since it's pure presentation over the existing
-`GET /patients` endpoint). It fetches `/patients` client-side, renders a responsive table (name,
-DOB, sex, phone, city/state, status, created-at), and includes a live search box that filters
-the already-fetched list by last name or phone number substring as you type. No new
-dependencies, no server-side rendering logic, and zero changes to any existing endpoint.
+**2. Patient dashboard - two versions exist, both read-only over `GET /patients`:**
 
-> Verified via `curl` (200 OK, correct HTML, `GET /patients` data present) and by reading the
-> fetch/render logic directly — not visually exercised in an actual browser during this session
-> (no browser tooling available here). If anything looks off visually, it's worth a quick manual
-> check before final submission.
+- **`frontend/`** — the primary one: React + Vite + Tailwind CSS. Metric header (Total
+  Patients, Today's Registrations, With Insurance on File), a styled/responsive patient table,
+  live client-side search/filter by name, phone, or date of birth, and a slide-over detail
+  drawer for a selected patient. Runs via `npm run dev` (Vite dev server on `:5173`, proxying
+  `/patients` and `/health` to the backend on `:3000` — see `frontend/vite.config.ts`) and builds
+  cleanly with `npm run build` (`tsc -b && vite build`, verified in this session). See
+  `frontend/README.md` for specifics.
+- **`backend/public/dashboard/index.html`** — the original zero-build static page at
+  `GET /dashboard`, served directly by the backend via `express.static`. Kept as-is: it needs no
+  build step or separate process, so it's a useful fallback if you only want to spin up the
+  backend and still see the data visually, without running a second dev server.
+
+Neither touches any existing endpoint or backend logic - both are pure presentation over
+`GET /patients`.
+
+> Verified: the backend-served static page via `curl` (200 OK, correct HTML, data present); the
+> React app via a full `npm run build` (clean) and a live dev-server run confirming the Vite
+> proxy actually reaches the real backend (`curl localhost:5173/patients` returned real patient
+> data). Neither was visually exercised in an actual browser during this session (no browser
+> tooling available here) - worth a quick manual look at both before final submission.
 
 ## Known limitations / trade-offs
 
