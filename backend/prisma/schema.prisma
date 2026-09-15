@@ -47,10 +47,38 @@ model Patient {
   updated_at DateTime  @updatedAt
   deleted_at DateTime?
 
+  transcripts Transcript[]
+
   // Frequently filtered/looked-up in both the REST API and the voice agent's
   // "is this a returning caller" check, so index them.
   @@index([last_name])
   @@index([phone_number])
   @@index([date_of_birth])
   @@map("patients")
+}
+
+// Call transcripts/analytics captured from Vapi's end-of-call-report webhook (see
+// voice-service.ts handleEndOfCallReport). patient_id is nullable because a call can end
+// before the caller's phone number is known to us (e.g. dropped mid-registration, or the ANI
+// didn't match any existing patient) - those are stored as anonymous call records rather than
+// dropped, so nothing about a completed call is silently lost.
+model Transcript {
+  id String @id @default(uuid()) @db.Uuid
+
+  patient_id String? @db.Uuid
+  patient    Patient? @relation(fields: [patient_id], references: [patient_id])
+
+  // Unique so a retried/duplicate webhook delivery from Vapi for the same call upserts instead
+  // of creating a second row for the same conversation.
+  vapi_call_id String @unique @db.VarChar(100)
+
+  summary          String? @db.Text
+  transcript_text  String? @db.Text
+  recording_url    String? @db.VarChar(500)
+  duration_seconds Int?
+
+  created_at DateTime @default(now())
+
+  @@index([patient_id])
+  @@map("transcripts")
 }

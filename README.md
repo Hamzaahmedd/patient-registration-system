@@ -41,6 +41,8 @@ REST clients ──▶  /patients  (backend/src/modules/patient)┘
   documented system prompt + tool definitions. **Never touches Prisma directly** — it calls the
   exact same `patient-service.ts` functions the REST layer uses, so a phone call and an API
   request are validated and persisted identically.
+- `modules/transcript/` — REST controller, Zod schema, service for call transcripts/analytics.
+  `voice-agent` calls its service directly from `handleEndOfCallReport`, same pattern as above.
 - `shared/` — cross-cutting concerns used by both modules: the `{ data, error }` response
   envelope, centralized error handling, spoken-date parsing, and PII-safe logging.
 - `config/` — environment loading, the singleton Prisma client, and the Pino logger.
@@ -61,15 +63,16 @@ REST clients ──▶  /patients  (backend/src/modules/patient)┘
 ```
 backend/
 ├── prisma/
-│   ├── schema.prisma        # Patient model, all 17 fields, constraints, indexes
-│   └── seed.ts               # 2 demo patients
+│   ├── schema.prisma        # Patient + Transcript models, constraints, indexes
+│   └── seed.ts               # 2 demo patients + 2 demo transcripts
 ├── public/
 │   └── dashboard/index.html  # Bonus: static read-only dashboard, served at /dashboard
 ├── src/
 │   ├── config/                # env, Prisma client singleton, logger
 │   ├── modules/
 │   │   ├── patient/           # REST: controller, service, zod schema, types
-│   │   └── voice-agent/       # Vapi webhook controller, service, prompt + tool defs
+│   │   ├── voice-agent/       # Vapi webhook controller, service, prompt + tool defs
+│   │   └── transcript/        # REST: controller, service, zod schema, types
 │   ├── shared/
 │   │   ├── middleware/        # response envelope, centralized error handler
 │   │   └── utils/              # spoken date parser, PII masking/redaction
@@ -141,6 +144,34 @@ All responses use the envelope `{ "data": ..., "error": null }` on success, or
 | POST | `/patients` | 201, 422 |
 | PUT | `/patients/:id` | 200, 400, 404, 422 |
 | DELETE | `/patients/:id` (soft delete — sets `deleted_at`, excluded from all reads) | 200, 400, 404 |
+| GET | `/patients/:id/transcripts` — call transcripts for one patient | 200, 400, 404 |
+| GET | `/transcripts` — all call transcripts, newest first (for the dashboard) | 200 |
+
+## Call transcripts & analytics
+
+Every completed Vapi call is persisted as a `Transcript` row (`prisma/schema.prisma`), populated
+by the `end-of-call-report` webhook event (`voice-controller.ts` → `handleEndOfCallReport` in
+`voice-service.ts`):
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | UUID | Primary key |
+| `patient_id` | UUID, nullable | Linked by looking up the caller's ANI (`call.customer.number`) against existing patients — **null** if no match (call ended before registering, or an unrecognized number) rather than dropping the transcript |
+| `vapi_call_id` | string, unique | Vapi's call id — the upsert key, so a retried webhook delivery updates the same row instead of duplicating it |
+| `summary` | text, nullable | Vapi's auto-generated call summary |
+| `transcript_text` | text, nullable | Full call transcript |
+| `recording_url` | string, nullable | Link to the call recording |
+| `duration_seconds` | int, nullable | Rounded from Vapi's (fractional) `durationSeconds` |
+| `created_at` | timestamp | Auto-generated |
+
+`GET /patients/:id/transcripts` 404s if the patient itself doesn't exist, but returns an empty
+array (200) if the patient exists with no calls yet — those are different situations and the
+status code says which one you're in. `GET /transcripts` has no patient scoping, for a
+dashboard-style global call log.
+
+The webhook handler never throws: a missing `call.id` is logged and skipped, and any
+persistence failure is caught and logged rather than surfaced back to Vapi (there's nothing
+Vapi could do with an error after the call has already ended).
 
 ## Environment variables
 
@@ -237,8 +268,7 @@ rather than glossing over.
 Both mechanisms share the same `findPatientByPhoneNumber` lookup and are covered by 12
 automated tests in `src/tests/run-tests.ts` (lookup match/no-match, a follow-up `update_patient`
 using the lookup-derived id, and all three `assistant-request` cases: matched caller, unmatched
-caller, and no caller number at all) — full suite is now **31/31 passing**, with zero changes to
-existing REST behavior.
+caller, and no caller number at all), with zero changes to existing REST behavior.
 
 **2. Patient dashboard - two versions exist, both read-only over `GET /patients`:**
 
@@ -262,6 +292,21 @@ Neither touches any existing endpoint or backend logic - both are pure presentat
 > proxy actually reaches the real backend (`curl localhost:5173/patients` returned real patient
 > data). Neither was visually exercised in an actual browser during this session (no browser
 > tooling available here) - worth a quick manual look at both before final submission.
+
+**3. Call transcripts & analytics.** A new `Transcript` model (`prisma/schema.prisma`) captures
+Vapi's `end-of-call-report` webhook for every completed call — summary, full transcript,
+recording URL, and duration — linked to a patient by caller-ID lookup, or stored with a null
+`patient_id` for anonymous calls (dropped calls, unrecognized numbers) rather than losing the
+data. Idempotent via an upsert keyed on `vapi_call_id`, so a retried webhook delivery updates the
+same row instead of duplicating it. Exposed via `GET /patients/:id/transcripts` (per-patient,
+404s only if the patient itself doesn't exist) and `GET /transcripts` (global log, for a
+dashboard) — see "Call transcripts & analytics" further down for the full field table.
+
+Seed data now includes 2 sample transcripts (one linked to Jane Doe, one anonymous). Covered by
+19 new automated tests: linking via ANI, duration rounding, idempotent retry (same call id twice
+→ one row, updated content), the anonymous-call path, a malformed payload with no `call.id`
+(never crashes), both new REST endpoints (200/404/empty-array cases), and the global endpoint's
+envelope shape. **Full suite: 50/50 passing**, with zero regressions to any existing test.
 
 ## Known limitations / trade-offs
 
@@ -297,7 +342,7 @@ Neither touches any existing endpoint or backend logic - both are pure presentat
 
 - Mock appointment scheduling after successful registration.
 - Multi-language support ("Hablo español" → Spanish system prompt variant).
-- Call transcript storage linked to `patient_id`.
 - A proper automated test framework + CI.
-- Re-test the duplicate-detection voice flow with a real phone call (only simulated via direct
-  webhook calls so far).
+- Re-test the duplicate-detection voice flow and end-of-call-report transcript capture with a
+  real phone call (both verified via simulated webhook payloads so far, not a live call).
+- A "Transcripts" view in the dashboard(s) over the new `GET /transcripts` endpoint.

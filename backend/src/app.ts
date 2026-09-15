@@ -6,6 +6,7 @@ import { responseEnvelope } from "./shared/middleware/response-envelope";
 import { errorHandler } from "./shared/middleware/error-handler";
 import { patientRouter } from "./modules/patient/patient-controller";
 import { voiceRouter } from "./modules/voice-agent/voice-controller";
+import { transcriptRouter } from "./modules/transcript/transcript-controller";
 
 export function createApp() {
   const app = express();
@@ -19,6 +20,7 @@ export function createApp() {
 
   // REST API - envelope-wrapped, per spec.
   app.use("/patients", responseEnvelope, patientRouter);
+  app.use("/transcripts", responseEnvelope, transcriptRouter);
 
   // Vapi webhook - intentionally bypasses the REST envelope (see voice-controller.ts).
   app.use("/voice", voiceRouter);

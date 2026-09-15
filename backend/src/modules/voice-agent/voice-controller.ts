@@ -4,6 +4,7 @@ import { logger } from "../../config/logger";
 import {
   buildAssistantConfigForCall,
   handleCreatePatientTool,
+  handleEndOfCallReport,
   handleLookupPatientByPhoneTool,
   handleUpdatePatientTool,
 } from "./voice-service";
@@ -29,10 +30,15 @@ interface VapiWebhookBody {
     type?: string;
     toolCallList?: VapiToolCall[];
     call?: {
+      id?: string;
       customer?: {
         number?: string;
       };
     };
+    summary?: string;
+    transcript?: string;
+    recordingUrl?: string;
+    durationSeconds?: number;
   };
 }
 
@@ -75,6 +81,14 @@ voiceRouter.post("/webhook", async (req: Request, res: Response, _next: NextFunc
     const callerNumber = body.message.call?.customer?.number;
     const assistant = await buildAssistantConfigForCall(callerNumber);
     res.status(200).json({ assistant });
+    return;
+  }
+
+  // Call transcripts & analytics: persist the completed call's transcript/summary/recording.
+  // Always acknowledges 200 - there's nothing Vapi can do with an error here, the call is over.
+  if (body.message?.type === "end-of-call-report") {
+    await handleEndOfCallReport(body.message);
+    res.status(200).json({ received: true });
     return;
   }
 

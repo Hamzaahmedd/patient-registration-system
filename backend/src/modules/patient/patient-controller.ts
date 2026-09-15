@@ -14,6 +14,7 @@ import {
   softDeletePatient,
   updatePatient,
 } from "./patient-service";
+import { listTranscriptsForPatient } from "../transcript/transcript-service";
 
 const patientIdParamSchema = z.string().uuid();
 
@@ -74,6 +75,19 @@ patientRouter.put(
     const patient = await updatePatient(patientId, input);
     logger.info({ patient }, "patient_updated_via_api");
     res.envelope(patient, 200);
+  }),
+);
+
+// GET /patients/:id/transcripts - call transcripts/analytics for a specific patient. 404s if
+// the patient itself doesn't exist (distinguishing "no such patient" from "no calls yet", which
+// returns an empty array with 200).
+patientRouter.get(
+  "/:id/transcripts",
+  asyncHandler(async (req, res) => {
+    const patientId = parsePatientId(req.params.id);
+    await getPatientById(patientId); // throws NotFoundError (404) if missing/soft-deleted
+    const transcripts = await listTranscriptsForPatient(patientId);
+    res.envelope(transcripts, 200);
   }),
 );
 

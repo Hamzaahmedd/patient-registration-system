@@ -8,7 +8,7 @@
  */
 import type { AddressInfo } from "node:net";
 import { createApp } from "../app";
-import { disconnectDatabase } from "../config/database";
+import { disconnectDatabase, prisma } from "../config/database";
 
 let passed = 0;
 let failed = 0;
@@ -222,6 +222,125 @@ async function main() {
   );
 
   await req("DELETE", `/patients/${dupPatientId}`);
+
+  // ---------------------------------------------------------------------------------------
+  // Call transcripts & analytics
+  // ---------------------------------------------------------------------------------------
+  const transcriptFixturePatient = {
+    first_name: "Priya",
+    last_name: "Nandan",
+    date_of_birth: "07/11/1992",
+    sex: "Female",
+    phone_number: "5554443333",
+    address_line_1: "42 Transcript Way",
+    city: "Callburg",
+    state: "WA",
+    zip_code: "98101",
+  };
+  const transcriptPatientCreated = await req("POST", "/patients", transcriptFixturePatient);
+  assert(transcriptPatientCreated.status === 201, "Transcript-detection fixture patient created");
+  const transcriptPatientId: string = transcriptPatientCreated.json?.data?.patient_id;
+
+  // 13. No transcripts yet -> empty array, 200 (not 404 - patient exists, just has no calls)
+  const emptyTranscripts = await req("GET", `/patients/${transcriptPatientId}/transcripts`);
+  assert(emptyTranscripts.status === 200, "GET /patients/:id/transcripts returns 200 before any calls exist");
+  assert(
+    Array.isArray(emptyTranscripts.json?.data) && emptyTranscripts.json.data.length === 0,
+    "GET /patients/:id/transcripts returns an empty array before any calls exist",
+  );
+
+  // 14. GET transcripts for a nonexistent patient -> 404
+  const transcriptsUnknownPatient = await req(
+    "GET",
+    "/patients/00000000-0000-0000-0000-000000000000/transcripts",
+  );
+  assert(
+    transcriptsUnknownPatient.status === 404,
+    `GET /patients/<unknown-uuid>/transcripts returns 404 (got ${transcriptsUnknownPatient.status})`,
+  );
+
+  // 15. end-of-call-report links a transcript to the patient via caller-ID (ANI) lookup
+  const eocrLinked = await req("POST", "/voice/webhook", {
+    message: {
+      type: "end-of-call-report",
+      call: { id: "test-call-priya-1", customer: { number: "+15554443333" } },
+      summary: "Priya completed registration successfully.",
+      transcript: "AI: Hello.\nUser: Hi, this is Priya.",
+      recordingUrl: "https://example.com/recordings/test-call-priya-1.mp3",
+      durationSeconds: 61.4,
+    },
+  });
+  assert(eocrLinked.status === 200, "end-of-call-report returns 200 for a linked call");
+
+  const linkedTranscripts = await req("GET", `/patients/${transcriptPatientId}/transcripts`);
+  assert(linkedTranscripts.json?.data?.length === 1, "Linked transcript now appears under the patient");
+  const linkedTranscript = linkedTranscripts.json?.data?.[0];
+  assert(linkedTranscript?.vapi_call_id === "test-call-priya-1", "Linked transcript has the right vapi_call_id");
+  assert(linkedTranscript?.duration_seconds === 61, "duration_seconds is rounded to the nearest integer");
+  assert(
+    linkedTranscript?.summary === "Priya completed registration successfully.",
+    "Linked transcript stores the call summary",
+  );
+  assert(
+    linkedTranscript?.recording_url === "https://example.com/recordings/test-call-priya-1.mp3",
+    "Linked transcript stores the recording URL",
+  );
+
+  // 16. Retried webhook delivery (same vapi_call_id) upserts instead of duplicating
+  await req("POST", "/voice/webhook", {
+    message: {
+      type: "end-of-call-report",
+      call: { id: "test-call-priya-1", customer: { number: "+15554443333" } },
+      summary: "UPDATED - retried delivery.",
+      durationSeconds: 61.4,
+    },
+  });
+  const afterRetryTranscripts = await req("GET", `/patients/${transcriptPatientId}/transcripts`);
+  assert(
+    afterRetryTranscripts.json?.data?.length === 1,
+    "Retried end-of-call-report delivery does not create a duplicate transcript",
+  );
+  assert(
+    afterRetryTranscripts.json?.data?.[0]?.summary === "UPDATED - retried delivery.",
+    "Retried end-of-call-report delivery updates the existing transcript",
+  );
+
+  // 17. end-of-call-report from an unrecognized number is stored as an anonymous transcript
+  const eocrAnonymous = await req("POST", "/voice/webhook", {
+    message: {
+      type: "end-of-call-report",
+      call: { id: "test-call-anon-1", customer: { number: "+19990001111" } },
+      summary: "Anonymous caller, no match.",
+      durationSeconds: 8,
+    },
+  });
+  assert(eocrAnonymous.status === 200, "end-of-call-report returns 200 for an unrecognized caller");
+
+  // 18. end-of-call-report with no call id is safely ignored (never crashes the webhook)
+  const eocrNoCallId = await req("POST", "/voice/webhook", {
+    message: { type: "end-of-call-report", summary: "Missing call id." },
+  });
+  assert(
+    eocrNoCallId.status === 200,
+    "end-of-call-report with no call.id still returns 200 (never blocks/crashes)",
+  );
+
+  // 19. Global GET /transcripts includes both the linked and anonymous transcripts
+  const globalTranscripts = await req("GET", "/transcripts");
+  assert(globalTranscripts.status === 200, "GET /transcripts returns 200");
+  assert(globalTranscripts.json?.error === null, "GET /transcripts envelope has error: null");
+  const globalCallIds: string[] = (globalTranscripts.json?.data ?? []).map((t: any) => t.vapi_call_id);
+  assert(globalCallIds.includes("test-call-priya-1"), "GET /transcripts includes the linked test transcript");
+  assert(globalCallIds.includes("test-call-anon-1"), "GET /transcripts includes the anonymous test transcript");
+  const anonEntry = (globalTranscripts.json?.data ?? []).find((t: any) => t.vapi_call_id === "test-call-anon-1");
+  assert(anonEntry?.patient_id === null, "Anonymous transcript has a null patient_id");
+
+  // Cleanup: remove test transcripts (no DELETE endpoint exists for transcripts by design -
+  // hard-delete directly, same as any other test-only fixture data) and soft-delete the fixture patient.
+  await prisma.transcript.deleteMany({
+    where: { vapi_call_id: { in: ["test-call-priya-1", "test-call-anon-1"] } },
+  });
+  await req("DELETE", `/patients/${transcriptPatientId}`);
 
   server.close();
   await disconnectDatabase();

@@ -4,6 +4,8 @@ import { parseSpokenDate } from "../../shared/utils/date-parser";
 import { logger } from "../../config/logger";
 import { createPatientSchema, updatePatientSchema } from "../patient/patient-schema";
 import { createPatient, findPatientByPhoneNumber, updatePatient } from "../patient/patient-service";
+import { createTranscriptSchema } from "../transcript/transcript-schema";
+import { createTranscript } from "../transcript/transcript-service";
 import {
   buildKnownCallerContext,
   buildReturningCallerFirstMessage,
@@ -131,6 +133,62 @@ export async function buildAssistantConfigForCall(callerPhoneNumber: string | nu
     // Never let a lookup failure block call setup - fall back to the default, generic assistant.
     logger.error({ err: error }, "call_start_lookup_failed");
     return base;
+  }
+}
+
+interface VapiEndOfCallReportMessage {
+  call?: {
+    id?: string;
+    customer?: { number?: string };
+  };
+  summary?: string;
+  transcript?: string;
+  recordingUrl?: string;
+  durationSeconds?: number;
+}
+
+/**
+ * Call transcripts & analytics: persists Vapi's end-of-call-report webhook payload to the
+ * transcripts table. Links to a patient by looking up the caller's ANI (same phone number used
+ * for duplicate detection) - if it doesn't match anyone (call ended before registering, or no
+ * ANI at all), the transcript is still saved with a null patient_id rather than dropped, per
+ * the "optional for anonymous calls" requirement.
+ *
+ * Never throws: a transcript-persistence failure must never surface as a webhook error back to
+ * Vapi (there's nothing Vapi could do with that error anyway - the call has already ended).
+ */
+export async function handleEndOfCallReport(message: VapiEndOfCallReportMessage): Promise<void> {
+  try {
+    const vapiCallId = message.call?.id;
+    if (!vapiCallId) {
+      logger.warn({}, "end_of_call_report_missing_call_id");
+      return;
+    }
+
+    let patientId: string | null = null;
+    const callerNumber = message.call?.customer?.number;
+    if (callerNumber) {
+      const patient = await findPatientByPhoneNumber(callerNumber);
+      if (patient) patientId = patient.patient_id;
+    }
+
+    const input = createTranscriptSchema.parse({
+      patient_id: patientId,
+      vapi_call_id: vapiCallId,
+      summary: typeof message.summary === "string" && message.summary.length > 0 ? message.summary : null,
+      transcript_text: typeof message.transcript === "string" ? message.transcript : null,
+      recording_url: typeof message.recordingUrl === "string" ? message.recordingUrl : null,
+      duration_seconds:
+        typeof message.durationSeconds === "number" ? Math.round(message.durationSeconds) : null,
+    });
+
+    const transcript = await createTranscript(input);
+    logger.info(
+      { transcript_id: transcript.id, patient_id: transcript.patient_id, vapi_call_id: transcript.vapi_call_id },
+      "call_transcript_saved",
+    );
+  } catch (error) {
+    logger.error({ err: error }, "end_of_call_report_persist_failed");
   }
 }
 
