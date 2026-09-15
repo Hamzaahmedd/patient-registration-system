@@ -9,6 +9,7 @@ export default defineConfig({
     proxy: {
       // Backend REST API (see ../backend). Run the backend on :3000 before `npm run dev` here.
       '/patients': 'http://localhost:3000',
+      '/transcripts': 'http://localhost:3000',
       '/health': 'http://localhost:3000',
     },
   },

@@ -1,6 +1,8 @@
 import path from "node:path";
 import express, { type Request, type Response } from "express";
+import cors from "cors";
 import pinoHttp from "pino-http";
+import { env } from "./config/env";
 import { logger } from "./config/logger";
 import { responseEnvelope } from "./shared/middleware/response-envelope";
 import { errorHandler } from "./shared/middleware/error-handler";
@@ -10,6 +12,16 @@ import { transcriptRouter } from "./modules/transcript/transcript-controller";
 
 export function createApp() {
   const app = express();
+
+  // Allows the frontend dashboard (a separate origin/port) to call this API directly - see
+  // env.corsOrigins / CORS_ORIGINS. The Vite dev proxy avoids needing this in local dev, but a
+  // production frontend build served from its own origin (or VITE_API_BASE_URL pointing here
+  // directly) requires it.
+  app.use(
+    cors({
+      origin: env.corsOrigins,
+    }),
+  );
 
   app.use(express.json());
   app.use(pinoHttp({ logger }));

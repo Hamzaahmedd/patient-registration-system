@@ -36,3 +36,10 @@ export function isSameLocalDay(a: Date, b: Date): boolean {
 export function initials(firstName: string, lastName: string): string {
   return `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase();
 }
+
+export function formatDuration(seconds: number | null): string {
+  if (seconds == null) return "—";
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}

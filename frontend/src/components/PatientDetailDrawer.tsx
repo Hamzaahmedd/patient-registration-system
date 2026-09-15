@@ -1,12 +1,17 @@
-import type { ReactNode } from "react";
-import { MapPin, Phone, Shield, User, X } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import { MapPin, Phone, PhoneCall, Shield, User, X } from "lucide-react";
 import type { Patient } from "../types/patient";
+import type { Transcript } from "../types/transcript";
+import { fetchPatientTranscripts } from "../api/transcripts";
 import { formatDateTime, formatPhone, initials } from "../utils/format";
+import { TranscriptListItem } from "./TranscriptListItem";
 
 interface PatientDetailDrawerProps {
   patient: Patient | null;
   onClose: () => void;
 }
+
+type Tab = "details" | "history";
 
 function Field({ label, value }: { label: string; value: string | null | undefined }) {
   return (
@@ -29,8 +34,54 @@ function Section({ icon: Icon, title, children }: { icon: typeof User; title: st
   );
 }
 
+function CallHistoryPanel({ patientId }: { patientId: string }) {
+  const [transcripts, setTranscripts] = useState<Transcript[]>([]);
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+
+  useEffect(() => {
+    let cancelled = false;
+    setState("loading");
+    fetchPatientTranscripts(patientId)
+      .then((data) => {
+        if (!cancelled) {
+          setTranscripts(data);
+          setState("ready");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setState("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [patientId]);
+
+  if (state === "loading") {
+    return <p className="text-sm text-slate-500">Loading call history...</p>;
+  }
+  if (state === "error") {
+    return <p className="text-sm text-rose-600">Couldn't load call history.</p>;
+  }
+  if (transcripts.length === 0) {
+    return <p className="text-sm text-slate-500">No calls on record for this patient yet.</p>;
+  }
+  return (
+    <div className="space-y-3">
+      {transcripts.map((t) => (
+        <TranscriptListItem key={t.id} transcript={t} />
+      ))}
+    </div>
+  );
+}
+
 export function PatientDetailDrawer({ patient, onClose }: PatientDetailDrawerProps) {
   const open = patient !== null;
+  const [tab, setTab] = useState<Tab>("details");
+
+  // Reset to the Details tab whenever a different patient is opened.
+  useEffect(() => {
+    if (patient) setTab("details");
+  }, [patient]);
 
   return (
     <>
@@ -73,40 +124,74 @@ export function PatientDetailDrawer({ patient, onClose }: PatientDetailDrawerPro
               </button>
             </div>
 
-            <div className="flex-1 space-y-8 overflow-y-auto px-6 py-6">
-              <Section icon={User} title="Demographics">
-                <Field label="Date of birth" value={patient.date_of_birth} />
-                <Field label="Sex" value={patient.sex} />
-                <Field label="Preferred language" value={patient.preferred_language} />
-              </Section>
+            <div className="flex border-b border-slate-100 px-6">
+              <button
+                type="button"
+                onClick={() => setTab("details")}
+                className={`flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-sm font-medium ${
+                  tab === "details"
+                    ? "border-indigo-600 text-indigo-600"
+                    : "border-transparent text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                <User size={14} />
+                Details
+              </button>
+              <button
+                type="button"
+                onClick={() => setTab("history")}
+                className={`flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-sm font-medium ${
+                  tab === "history"
+                    ? "border-indigo-600 text-indigo-600"
+                    : "border-transparent text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                <PhoneCall size={14} />
+                Call History
+              </button>
+            </div>
 
-              <Section icon={Phone} title="Contact">
-                <Field label="Phone" value={formatPhone(patient.phone_number)} />
-                <Field label="Email" value={patient.email} />
-              </Section>
+            <div className="flex-1 overflow-y-auto px-6 py-6">
+              {tab === "details" ? (
+                <div className="space-y-8">
+                  <Section icon={User} title="Demographics">
+                    <Field label="Date of birth" value={patient.date_of_birth} />
+                    <Field label="Sex" value={patient.sex} />
+                    <Field label="Preferred language" value={patient.preferred_language} />
+                  </Section>
 
-              <Section icon={MapPin} title="Address">
-                <Field label="Street" value={patient.address_line_1} />
-                <Field label="Apt / Suite" value={patient.address_line_2} />
-                <Field label="City" value={patient.city} />
-                <Field label="State" value={patient.state} />
-                <Field label="ZIP code" value={patient.zip_code} />
-              </Section>
+                  <Section icon={Phone} title="Contact">
+                    <Field label="Phone" value={formatPhone(patient.phone_number)} />
+                    <Field label="Email" value={patient.email} />
+                  </Section>
 
-              <Section icon={Shield} title="Insurance & emergency contact">
-                <Field label="Insurance provider" value={patient.insurance_provider} />
-                <Field label="Member ID" value={patient.insurance_member_id} />
-                <Field label="Emergency contact" value={patient.emergency_contact_name} />
-                <Field
-                  label="Emergency phone"
-                  value={patient.emergency_contact_phone ? formatPhone(patient.emergency_contact_phone) : null}
-                />
-              </Section>
+                  <Section icon={MapPin} title="Address">
+                    <Field label="Street" value={patient.address_line_1} />
+                    <Field label="Apt / Suite" value={patient.address_line_2} />
+                    <Field label="City" value={patient.city} />
+                    <Field label="State" value={patient.state} />
+                    <Field label="ZIP code" value={patient.zip_code} />
+                  </Section>
 
-              <div className="border-t border-slate-100 pt-4 text-xs text-slate-400">
-                <p>Registered {formatDateTime(patient.created_at)}</p>
-                <p>Last updated {formatDateTime(patient.updated_at)}</p>
-              </div>
+                  <Section icon={Shield} title="Insurance & emergency contact">
+                    <Field label="Insurance provider" value={patient.insurance_provider} />
+                    <Field label="Member ID" value={patient.insurance_member_id} />
+                    <Field label="Emergency contact" value={patient.emergency_contact_name} />
+                    <Field
+                      label="Emergency phone"
+                      value={patient.emergency_contact_phone ? formatPhone(patient.emergency_contact_phone) : null}
+                    />
+                  </Section>
+
+                  <div className="border-t border-slate-100 pt-4 text-xs text-slate-400">
+                    <p>Registered {formatDateTime(patient.created_at)}</p>
+                    <p>Last updated {formatDateTime(patient.updated_at)}</p>
+                    {patient.deleted_at && <p className="text-rose-500">Deleted {formatDateTime(patient.deleted_at)}</p>}
+                  </div>
+                </div>
+              ) : (
+                <CallHistoryPanel patientId={patient.patient_id} />
+              )}
             </div>
           </div>
         )}

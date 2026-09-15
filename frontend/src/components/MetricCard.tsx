@@ -4,13 +4,14 @@ interface MetricCardProps {
   label: string;
   value: string | number;
   icon: LucideIcon;
-  accent: "indigo" | "emerald" | "sky";
+  accent: "indigo" | "emerald" | "sky" | "rose";
 }
 
 const ACCENT_STYLES: Record<MetricCardProps["accent"], string> = {
   indigo: "bg-indigo-50 text-indigo-600",
   emerald: "bg-emerald-50 text-emerald-600",
   sky: "bg-sky-50 text-sky-600",
+  rose: "bg-rose-50 text-rose-600",
 };
 
 export function MetricCard({ label, value, icon: Icon, accent }: MetricCardProps) {

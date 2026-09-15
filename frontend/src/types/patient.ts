@@ -22,6 +22,7 @@ export interface Patient {
   emergency_contact_phone: string | null;
   created_at: string;
   updated_at: string;
+  deleted_at: string | null;
 }
 
 export interface ApiEnvelope<T> {

@@ -112,6 +112,15 @@ async function main() {
     "Soft-deleted patient excluded from list results",
   );
 
+  // include_deleted=true toggle (dashboard soft-delete filter) - additive, doesn't change default behavior
+  const includeDeletedList = await req("GET", "/patients?last_name=Patient&include_deleted=true");
+  const includeDeletedMatch = includeDeletedList.json?.data?.find((p: any) => p.patient_id === patientId);
+  assert(Boolean(includeDeletedMatch), "?include_deleted=true includes the soft-deleted patient");
+  assert(
+    typeof includeDeletedMatch?.deleted_at === "string",
+    "Soft-deleted patient's deleted_at is populated when included",
+  );
+
   const secondDelete = await req("DELETE", `/patients/${patientId}`);
   assert(secondDelete.status === 404, `Deleting an already-deleted patient returns 404 (got ${secondDelete.status})`);
 

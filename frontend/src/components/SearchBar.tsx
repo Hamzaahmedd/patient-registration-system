@@ -5,11 +5,20 @@ interface SearchBarProps {
   onChange: (value: string) => void;
   resultCount: number;
   totalCount: number;
+  showDeleted: boolean;
+  onToggleShowDeleted: (value: boolean) => void;
 }
 
-export function SearchBar({ value, onChange, resultCount, totalCount }: SearchBarProps) {
+export function SearchBar({
+  value,
+  onChange,
+  resultCount,
+  totalCount,
+  showDeleted,
+  onToggleShowDeleted,
+}: SearchBarProps) {
   return (
-    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="relative w-full sm:max-w-sm">
         <Search
           size={16}
@@ -33,17 +42,29 @@ export function SearchBar({ value, onChange, resultCount, totalCount }: SearchBa
           </button>
         )}
       </div>
-      <p className="text-sm text-slate-500">
-        {value ? (
-          <>
-            Showing <span className="font-medium text-slate-700">{resultCount}</span> of {totalCount}
-          </>
-        ) : (
-          <>
-            <span className="font-medium text-slate-700">{totalCount}</span> patient{totalCount === 1 ? "" : "s"}
-          </>
-        )}
-      </p>
+
+      <div className="flex items-center gap-4">
+        <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-600">
+          <input
+            type="checkbox"
+            checked={showDeleted}
+            onChange={(e) => onToggleShowDeleted(e.target.checked)}
+            className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-400"
+          />
+          Show deleted
+        </label>
+        <p className="whitespace-nowrap text-sm text-slate-500">
+          {value ? (
+            <>
+              Showing <span className="font-medium text-slate-700">{resultCount}</span> of {totalCount}
+            </>
+          ) : (
+            <>
+              <span className="font-medium text-slate-700">{totalCount}</span> patient{totalCount === 1 ? "" : "s"}
+            </>
+          )}
+        </p>
+      </div>
     </div>
   );
 }

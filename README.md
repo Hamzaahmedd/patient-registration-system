@@ -139,13 +139,17 @@ All responses use the envelope `{ "data": ..., "error": null }` on success, or
 
 | Method | Endpoint | Status codes |
 |---|---|---|
-| GET | `/patients` (optional `?last_name=`, `?date_of_birth=`, `?phone_number=`) | 200 |
+| GET | `/patients` (optional `?last_name=`, `?date_of_birth=`, `?phone_number=`, `?include_deleted=true`) | 200 |
 | GET | `/patients/:id` | 200, 400 (malformed UUID), 404 |
 | POST | `/patients` | 201, 422 |
 | PUT | `/patients/:id` | 200, 400, 404, 422 |
 | DELETE | `/patients/:id` (soft delete — sets `deleted_at`, excluded from all reads) | 200, 400, 404 |
 | GET | `/patients/:id/transcripts` — call transcripts for one patient | 200, 400, 404 |
 | GET | `/transcripts` — all call transcripts, newest first (for the dashboard) | 200 |
+
+> `?include_deleted=true` is additive (not in the original spec's filter list) — added so the
+> React dashboard's "Show deleted" toggle has something real to show. Unset/`false` preserves
+> the original default (soft-deleted patients excluded, matching every existing test).
 
 ## Call transcripts & analytics
 
@@ -180,6 +184,7 @@ Vapi could do with an error after the call has already ended).
 | `DATABASE_URL` | Yes | Neon Postgres connection string. |
 | `PORT` | No (default 3000) | HTTP port. |
 | `NODE_ENV` | No | `development` / `production`. |
+| `CORS_ORIGINS` | No (defaults to Vite's `:5173` on localhost/127.0.0.1) | Comma-separated origins allowed to call this API cross-origin — the React frontend. |
 | `VAPI_API_KEY` | Only if provisioning assistants via Vapi's API instead of the dashboard | Not read by the running server today — reserved for a future automation script. |
 | `VAPI_WEBHOOK_SECRET` | Recommended | If set, `/voice/webhook` requires a matching `x-vapi-secret` header; if left empty, the check is skipped (documented trade-off below). |
 
@@ -270,28 +275,44 @@ automated tests in `src/tests/run-tests.ts` (lookup match/no-match, a follow-up 
 using the lookup-derived id, and all three `assistant-request` cases: matched caller, unmatched
 caller, and no caller number at all), with zero changes to existing REST behavior.
 
-**2. Patient dashboard - two versions exist, both read-only over `GET /patients`:**
+**2. Patient dashboard - two versions exist:**
 
-- **`frontend/`** — the primary one: React + Vite + Tailwind CSS. Metric header (Total
-  Patients, Today's Registrations, With Insurance on File), a styled/responsive patient table,
-  live client-side search/filter by name, phone, or date of birth, and a slide-over detail
-  drawer for a selected patient. Runs via `npm run dev` (Vite dev server on `:5173`, proxying
-  `/patients` and `/health` to the backend on `:3000` — see `frontend/vite.config.ts`) and builds
-  cleanly with `npm run build` (`tsc -b && vite build`, verified in this session). See
-  `frontend/README.md` for specifics.
+- **`frontend/`** — the primary one: React + Vite + Tailwind CSS + Lucide icons, wired to
+  `GET /patients`, `GET /patients/:id/transcripts`, and `GET /transcripts`.
+  - **Metric header**: Total Patients, Total Call Transcripts, System Health (live `/health` check).
+  - **Patient table**: name, DOB, sex, phone, address, insurance, active/deleted status, created
+    date.
+  - **Search/filter**: live client-side filter by name, phone, or date of birth.
+  - **Soft-delete filter toggle**: "Show deleted" checkbox calls `?include_deleted=true` (see the
+    REST API table above) and renders deleted rows with a distinct badge, dimmed.
+  - **Patient detail drawer**: two tabs — Details (full demographics) and Call History (lazily
+    fetches that patient's transcripts on tab-open: summaries, durations, an `<audio>` player +
+    link for the recording, and an expandable full transcript).
+  - **Call Transcripts tab**: a second top-level tab showing the global call log across every
+    caller, each resolved to a patient name where possible ("Anonymous caller" otherwise).
+  - Runs via `npm run dev` (Vite dev server on `:5173`, proxying `/patients`, `/transcripts`,
+    `/health` to the backend on `:3000` — see `frontend/vite.config.ts`); can instead point at a
+    non-proxied backend via `VITE_API_BASE_URL` (`frontend/.env.example`), which is why the
+    backend now has configurable CORS (`CORS_ORIGINS`, see Environment variables above). Builds
+    cleanly with `npm run build` (`tsc -b && vite build`, verified in this session, zero errors).
+    See `frontend/README.md` for specifics.
 - **`backend/public/dashboard/index.html`** — the original zero-build static page at
-  `GET /dashboard`, served directly by the backend via `express.static`. Kept as-is: it needs no
-  build step or separate process, so it's a useful fallback if you only want to spin up the
-  backend and still see the data visually, without running a second dev server.
+  `GET /dashboard`, served directly by the backend via `express.static`. Kept as-is (not updated
+  with the transcript features above): it needs no build step or separate process, so it's a
+  useful fallback if you only want to spin up the backend and still see basic patient data
+  visually, without running a second dev server.
 
-Neither touches any existing endpoint or backend logic - both are pure presentation over
-`GET /patients`.
+Neither touches any existing endpoint's behavior or contract - both are pure presentation, and
+the one backend addition they both rely on (`?include_deleted=true`) is additive and covered by
+its own tests (see "Production guardrails self-audit" → now **52/52** tests passing).
 
 > Verified: the backend-served static page via `curl` (200 OK, correct HTML, data present); the
-> React app via a full `npm run build` (clean) and a live dev-server run confirming the Vite
-> proxy actually reaches the real backend (`curl localhost:5173/patients` returned real patient
-> data). Neither was visually exercised in an actual browser during this session (no browser
-> tooling available here) - worth a quick manual look at both before final submission.
+> React app via a full `npm run build` (clean, zero errors) and a live dev-server run confirming
+> the Vite proxy reaches the real backend for every endpoint it uses (`/patients`,
+> `/patients?include_deleted=true`, `/patients/:id/transcripts`, `/transcripts`, `/health` all
+> returned real data through `curl localhost:5173/...`). Neither was visually exercised in an
+> actual browser during this session (no browser tooling available here) - worth a quick manual
+> look at both before final submission, especially the two new tabs/toggle interactions.
 
 **3. Call transcripts & analytics.** A new `Transcript` model (`prisma/schema.prisma`) captures
 Vapi's `end-of-call-report` webhook for every completed call — summary, full transcript,
@@ -303,10 +324,12 @@ same row instead of duplicating it. Exposed via `GET /patients/:id/transcripts` 
 dashboard) — see "Call transcripts & analytics" further down for the full field table.
 
 Seed data now includes 2 sample transcripts (one linked to Jane Doe, one anonymous). Covered by
-19 new automated tests: linking via ANI, duration rounding, idempotent retry (same call id twice
+19 automated tests: linking via ANI, duration rounding, idempotent retry (same call id twice
 → one row, updated content), the anonymous-call path, a malformed payload with no `call.id`
 (never crashes), both new REST endpoints (200/404/empty-array cases), and the global endpoint's
-envelope shape. **Full suite: 50/50 passing**, with zero regressions to any existing test.
+envelope shape. Full suite was 50/50 at that point (2 more were added afterward for the
+`include_deleted` toggle - see the dashboard section above; **current total: 52/52**), with zero
+regressions to any existing test.
 
 ## Known limitations / trade-offs
 

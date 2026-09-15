@@ -103,5 +103,9 @@ export const listPatientsQuerySchema = z
     last_name: z.string().trim().min(1).optional(),
     date_of_birth: z.string().trim().optional(),
     phone_number: z.string().trim().optional(),
+    // Not in the original spec's filter list - added for the dashboard's soft-delete filter
+    // toggle. Defaults to excluding soft-deleted records (unchanged prior behavior) unless
+    // explicitly set to "true".
+    include_deleted: z.enum(["true", "false"]).optional(),
   })
   .strict();

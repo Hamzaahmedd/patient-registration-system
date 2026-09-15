@@ -57,6 +57,7 @@ function toDTO(patient: Patient): PatientDTO {
     emergency_contact_phone: patient.emergency_contact_phone,
     created_at: patient.created_at.toISOString(),
     updated_at: patient.updated_at.toISOString(),
+    deleted_at: patient.deleted_at ? patient.deleted_at.toISOString() : null,
   };
 }
 
@@ -114,7 +115,9 @@ export async function findPatientByPhoneNumber(phoneNumber: string): Promise<Pat
 }
 
 export async function listPatients(filters: ListPatientsQuery): Promise<PatientDTO[]> {
-  const where: Record<string, unknown> = { deleted_at: null };
+  // Default (unset or "false") preserves the original behavior - active patients only.
+  // "true" is additive, for the dashboard's soft-delete filter toggle.
+  const where: Record<string, unknown> = filters.include_deleted === "true" ? {} : { deleted_at: null };
 
   if (filters.last_name) {
     where.last_name = { equals: filters.last_name, mode: "insensitive" };

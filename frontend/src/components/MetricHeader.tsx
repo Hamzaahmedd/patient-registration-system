@@ -1,22 +1,30 @@
-import { CalendarCheck, ShieldCheck, Users } from "lucide-react";
-import type { Patient } from "../types/patient";
-import { isSameLocalDay } from "../utils/format";
+import { Activity, PhoneCall, Users } from "lucide-react";
 import { MetricCard } from "./MetricCard";
 
 interface MetricHeaderProps {
-  patients: Patient[];
+  patientCount: number;
+  transcriptCount: number;
+  health: "checking" | "healthy" | "down";
 }
 
-export function MetricHeader({ patients }: MetricHeaderProps) {
-  const today = new Date();
-  const todaysRegistrations = patients.filter((p) => isSameLocalDay(new Date(p.created_at), today)).length;
-  const insured = patients.filter((p) => Boolean(p.insurance_provider)).length;
+const HEALTH_LABEL: Record<MetricHeaderProps["health"], string> = {
+  checking: "Checking...",
+  healthy: "Healthy",
+  down: "Unreachable",
+};
 
+const HEALTH_ACCENT: Record<MetricHeaderProps["health"], "indigo" | "emerald" | "sky" | "rose"> = {
+  checking: "sky",
+  healthy: "emerald",
+  down: "rose",
+};
+
+export function MetricHeader({ patientCount, transcriptCount, health }: MetricHeaderProps) {
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-      <MetricCard label="Total patients" value={patients.length} icon={Users} accent="indigo" />
-      <MetricCard label="Today's registrations" value={todaysRegistrations} icon={CalendarCheck} accent="emerald" />
-      <MetricCard label="With insurance on file" value={insured} icon={ShieldCheck} accent="sky" />
+      <MetricCard label="Total patients" value={patientCount} icon={Users} accent="indigo" />
+      <MetricCard label="Total call transcripts" value={transcriptCount} icon={PhoneCall} accent="sky" />
+      <MetricCard label="System health" value={HEALTH_LABEL[health]} icon={Activity} accent={HEALTH_ACCENT[health]} />
     </div>
   );
 }

@@ -8,10 +8,19 @@ function requireEnv(name: string, fallback?: string): string {
   return value;
 }
 
+// Comma-separated list of origins allowed to call the REST API cross-origin (the frontend
+// dashboard in local dev, and wherever it's deployed). Defaults cover Vite's default dev port
+// under both localhost and 127.0.0.1.
+const DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173";
+
 export const env = {
   nodeEnv: process.env.NODE_ENV ?? "development",
   port: Number(process.env.PORT ?? 3000),
   databaseUrl: requireEnv("DATABASE_URL"),
+  corsOrigins: (process.env.CORS_ORIGINS ?? DEFAULT_CORS_ORIGINS)
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
   vapi: {
     apiKey: process.env.VAPI_API_KEY ?? "",
     webhookSecret: process.env.VAPI_WEBHOOK_SECRET ?? "",
