@@ -1,7 +1,11 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { env } from "../../config/env";
 import { logger } from "../../config/logger";
-import { handleCreatePatientTool, handleUpdatePatientTool } from "./voice-service";
+import {
+  handleCreatePatientTool,
+  handleLookupPatientByPhoneTool,
+  handleUpdatePatientTool,
+} from "./voice-service";
 
 /**
  * Vapi tool-call webhook. Deliberately NOT wrapped in the { data, error } REST envelope
@@ -27,6 +31,7 @@ interface VapiWebhookBody {
 }
 
 const TOOL_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<string>> = {
+  lookup_patient_by_phone: handleLookupPatientByPhoneTool,
   create_patient: handleCreatePatientTool,
   update_patient: handleUpdatePatientTool,
 };

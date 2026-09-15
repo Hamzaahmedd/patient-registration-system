@@ -63,6 +63,8 @@ backend/
 ├── prisma/
 │   ├── schema.prisma        # Patient model, all 17 fields, constraints, indexes
 │   └── seed.ts               # 2 demo patients
+├── public/
+│   └── dashboard/index.html  # Bonus: static read-only dashboard, served at /dashboard
 ├── src/
 │   ├── config/                # env, Prisma client singleton, logger
 │   ├── modules/
@@ -192,12 +194,43 @@ tool-calling assistants (a hard state-machine gate would need to reject/defer to
 on tracked conversation state, which is out of scope for a 3-hour build) and is worth knowing
 rather than glossing over.
 
+## Bonus features implemented
+
+**1. Duplicate-caller detection (voice integration).** A new `lookup_patient_by_phone` tool
+(`voice-service.ts` → `handleLookupPatientByPhoneTool`, backed by the existing
+`findPatientByPhoneNumber` in `patient-service.ts`) is called by the assistant as soon as the
+caller's phone number is known — before collecting anything else. The system prompt
+(`prompt-templates.ts`) branches on the result:
+- Match found → the assistant greets the caller by name ("Welcome back, Jane! It looks like we
+  already have a record for you. Would you like to update your information instead?") and, if
+  they agree, switches into an update flow that calls `update_patient` with the `patient_id`
+  the lookup returned, changing only the fields the caller wants changed.
+- No match → the normal full registration flow continues, invisibly to the caller.
+
+Verified directly against the webhook (bypassing the need for a live phone call) with three
+simulated tool-calls: an existing phone number correctly returned the matching patient's name
+and ID, an unknown number correctly returned "no existing record," and a follow-up
+`update_patient` call using the returned ID correctly updated that patient — all without
+touching the REST API's behavior (full 19-test suite re-run and still green afterward).
+
+**2. Patient dashboard (read-only web UI).** A single self-contained static page at
+`GET /dashboard` (`backend/public/dashboard/index.html`, served via `express.static` mounted in
+`app.ts` — no new backend module needed, since it's pure presentation over the existing
+`GET /patients` endpoint). It fetches `/patients` client-side, renders a responsive table (name,
+DOB, sex, phone, city/state, status, created-at), and includes a live search box that filters
+the already-fetched list by last name or phone number substring as you type. No new
+dependencies, no server-side rendering logic, and zero changes to any existing endpoint.
+
+> Verified via `curl` (200 OK, correct HTML, `GET /patients` data present) and by reading the
+> fetch/render logic directly — not visually exercised in an actual browser during this session
+> (no browser tooling available here). If anything looks off visually, it's worth a quick manual
+> check before final submission.
+
 ## Known limitations / trade-offs
 
-- **Duplicate-caller detection, appointment scheduling, multi-language, call transcripts, and a
-  dashboard UI are intentionally deferred** — out of core scope per this build's priorities.
-  `findPatientByPhoneNumber` already exists in `patient-service.ts` as a building block for the
-  duplicate-detection bonus.
+- **Appointment scheduling, multi-language support, and call transcripts remain deferred** — out
+  of core scope per this build's priorities (duplicate detection and the dashboard, originally
+  listed here too, are now implemented above).
 - **US states only** (50 + DC) — territories (PR, GU, VI, etc.) are out of scope.
 - **`VAPI_WEBHOOK_SECRET` is optional** — if unset, the webhook accepts any caller. Fine for a
   time-boxed demo behind a private ngrok URL; a production deployment should make this mandatory.
@@ -223,11 +256,11 @@ rather than glossing over.
   tool's actual success result. Worth revisiting the prompt's error-handling section to make
   the "only report failure if the tool result says so" instruction more explicit.
 
-## Next steps (bonus challenges, deferred)
+## Next steps (remaining bonus challenges)
 
-- Duplicate-caller detection via `findPatientByPhoneNumber` + a conversational branch in the prompt.
 - Mock appointment scheduling after successful registration.
 - Multi-language support ("Hablo español" → Spanish system prompt variant).
 - Call transcript storage linked to `patient_id`.
-- A simple read-only dashboard over `GET /patients`.
 - A proper automated test framework + CI.
+- Re-test the duplicate-detection voice flow with a real phone call (only simulated via direct
+  webhook calls so far).

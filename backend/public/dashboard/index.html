@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Patient Registration Dashboard</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --card: #ffffff;
+    --border: #e2e5ea;
+    --text: #1f2430;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --accent-soft: #eaf1ff;
+    --danger: #b91c1c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  header {
+    padding: 24px 20px 12px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 1.4rem;
+    margin: 0 0 4px;
+  }
+  .subtitle {
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+  .toolbar {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 20px 16px;
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  #search {
+    flex: 1;
+    min-width: 220px;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.95rem;
+    background: var(--card);
+  }
+  #search:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  #refresh {
+    padding: 10px 16px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    cursor: pointer;
+    font-size: 0.9rem;
+  }
+  #refresh:hover { background: var(--accent-soft); }
+  #count {
+    color: var(--muted);
+    font-size: 0.85rem;
+    white-space: nowrap;
+  }
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 20px 40px;
+  }
+  .table-wrap {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow-x: auto;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.88rem;
+    min-width: 720px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  th {
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    background: #fafbfc;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #fbfcff; }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    background: #e7f6ec;
+    color: #166534;
+  }
+  .empty, .error, .loading {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--muted);
+  }
+  .error { color: var(--danger); }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Patient Registration Dashboard</h1>
+    <div class="subtitle">Read-only view over <code>GET /patients</code>.</div>
+  </header>
+
+  <div class="toolbar">
+    <input id="search" type="text" placeholder="Search by last name or phone number..." autocomplete="off" />
+    <button id="refresh" type="button">Refresh</button>
+    <span id="count"></span>
+  </div>
+
+  <main>
+    <div class="table-wrap">
+      <table id="patient-table" hidden>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Date of birth</th>
+            <th>Sex</th>
+            <th>Phone</th>
+            <th>City / State</th>
+            <th>Status</th>
+            <th>Created</th>
+          </tr>
+        </thead>
+        <tbody id="patient-rows"></tbody>
+      </table>
+      <div id="loading" class="loading">Loading patients...</div>
+      <div id="empty" class="empty" hidden>No patients match your search.</div>
+      <div id="error" class="error" hidden></div>
+    </div>
+  </main>
+
+  <script>
+    (function () {
+      var allPatients = [];
+      var tableEl = document.getElementById("patient-table");
+      var rowsEl = document.getElementById("patient-rows");
+      var loadingEl = document.getElementById("loading");
+      var emptyEl = document.getElementById("empty");
+      var errorEl = document.getElementById("error");
+      var countEl = document.getElementById("count");
+      var searchEl = document.getElementById("search");
+      var refreshEl = document.getElementById("refresh");
+
+      function escapeHtml(value) {
+        var div = document.createElement("div");
+        div.textContent = value == null ? "" : String(value);
+        return div.innerHTML;
+      }
+
+      function formatCreatedAt(iso) {
+        try {
+          var d = new Date(iso);
+          return d.toLocaleString(undefined, {
+            year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+          });
+        } catch (e) {
+          return iso;
+        }
+      }
+
+      function formatPhone(digits) {
+        if (!digits || digits.length !== 10) return digits || "";
+        return "(" + digits.slice(0, 3) + ") " + digits.slice(3, 6) + "-" + digits.slice(6);
+      }
+
+      function render(patients) {
+        rowsEl.innerHTML = "";
+        if (patients.length === 0) {
+          tableEl.hidden = true;
+          emptyEl.hidden = false;
+          return;
+        }
+        emptyEl.hidden = true;
+        tableEl.hidden = false;
+
+        patients.forEach(function (p) {
+          var tr = document.createElement("tr");
+          tr.innerHTML =
+            "<td>" + escapeHtml(p.first_name + " " + p.last_name) + "</td>" +
+            "<td>" + escapeHtml(p.date_of_birth) + "</td>" +
+            "<td>" + escapeHtml(p.sex) + "</td>" +
+            "<td>" + escapeHtml(formatPhone(p.phone_number)) + "</td>" +
+            "<td>" + escapeHtml(p.city + ", " + p.state) + "</td>" +
+            "<td><span class=\"badge\">Active</span></td>" +
+            "<td>" + escapeHtml(formatCreatedAt(p.created_at)) + "</td>";
+          rowsEl.appendChild(tr);
+        });
+      }
+
+      function applyFilter() {
+        var term = searchEl.value.trim().toLowerCase();
+        if (!term) {
+          render(allPatients);
+          updateCount(allPatients.length, allPatients.length);
+          return;
+        }
+        var digitsTerm = term.replace(/\D/g, "");
+        var filtered = allPatients.filter(function (p) {
+          var lastNameMatch = (p.last_name || "").toLowerCase().indexOf(term) !== -1;
+          var phoneMatch = digitsTerm.length > 0 && (p.phone_number || "").indexOf(digitsTerm) !== -1;
+          return lastNameMatch || phoneMatch;
+        });
+        render(filtered);
+        updateCount(filtered.length, allPatients.length);
+      }
+
+      function updateCount(shown, total) {
+        countEl.textContent = shown === total
+          ? total + " patient" + (total === 1 ? "" : "s")
+          : shown + " of " + total + " patients";
+      }
+
+      function loadPatients() {
+        loadingEl.hidden = false;
+        errorEl.hidden = true;
+        tableEl.hidden = true;
+        emptyEl.hidden = true;
+
+        fetch("/patients")
+          .then(function (res) {
+            if (!res.ok) throw new Error("Request failed with status " + res.status);
+            return res.json();
+          })
+          .then(function (body) {
+            if (body.error) throw new Error(body.error.message || "Unknown API error");
+            allPatients = Array.isArray(body.data) ? body.data : [];
+            loadingEl.hidden = true;
+            applyFilter();
+          })
+          .catch(function (err) {
+            loadingEl.hidden = true;
+            errorEl.hidden = false;
+            errorEl.textContent = "Couldn't load patients: " + err.message;
+          });
+      }
+
+      searchEl.addEventListener("input", applyFilter);
+      refreshEl.addEventListener("click", loadPatients);
+      loadPatients();
+    })();
+  </script>
+</body>
+</html>

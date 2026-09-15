@@ -1,3 +1,4 @@
+import path from "node:path";
 import express, { type Request, type Response } from "express";
 import pinoHttp from "pino-http";
 import { logger } from "./config/logger";
@@ -21,6 +22,9 @@ export function createApp() {
 
   // Vapi webhook - intentionally bypasses the REST envelope (see voice-controller.ts).
   app.use("/voice", voiceRouter);
+
+  // Read-only dashboard (bonus) - static assets only, fetches GET /patients client-side.
+  app.use("/dashboard", express.static(path.join(__dirname, "../public/dashboard")));
 
   app.use((req: Request, res: Response) => {
     res.status(404).json({ data: null, error: { code: "NOT_FOUND", message: `No route for ${req.method} ${req.path}`, details: null } });

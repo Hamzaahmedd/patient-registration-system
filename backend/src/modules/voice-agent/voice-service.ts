@@ -3,7 +3,7 @@ import { NotFoundError } from "../../shared/middleware/error-handler";
 import { parseSpokenDate } from "../../shared/utils/date-parser";
 import { logger } from "../../config/logger";
 import { createPatientSchema, updatePatientSchema } from "../patient/patient-schema";
-import { createPatient, updatePatient } from "../patient/patient-service";
+import { createPatient, findPatientByPhoneNumber, updatePatient } from "../patient/patient-service";
 
 /**
  * Turns a ZodError into a short, speakable sentence naming the specific field(s) that
@@ -28,6 +28,30 @@ function normalizeVoiceInput(raw: Record<string, unknown>): Record<string, unkno
     if (parsed) normalized.date_of_birth = parsed;
   }
   return normalized;
+}
+
+/**
+ * Duplicate-detection bonus: called as soon as the caller's phone number is known, before the
+ * rest of registration. Returns a speakable result that also carries the patient_id in plain
+ * text so the model can reuse it in a later update_patient call - Vapi tool results are plain
+ * strings read back into the conversation, not structured data, so this is the only channel
+ * available for the model to "remember" the id.
+ */
+export async function handleLookupPatientByPhoneTool(rawArgs: Record<string, unknown>): Promise<string> {
+  const phoneNumber = rawArgs.phone_number;
+  if (typeof phoneNumber !== "string" || phoneNumber.trim().length === 0) {
+    return "No phone number was provided to look up.";
+  }
+  try {
+    const patient = await findPatientByPhoneNumber(phoneNumber);
+    if (!patient) {
+      return "No existing record found for that phone number. Proceed with a new registration.";
+    }
+    return `An existing record was found for ${patient.first_name} ${patient.last_name}, patient ID ${patient.patient_id}. Ask the caller if they'd like to update this record instead of creating a new one.`;
+  } catch (error) {
+    logger.error({ err: error }, "voice_lookup_patient_failed");
+    return "The lookup couldn't be completed right now. Proceed with a new registration.";
+  }
 }
 
 export async function handleCreatePatientTool(rawArgs: Record<string, unknown>): Promise<string> {
