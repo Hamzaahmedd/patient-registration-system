@@ -14,7 +14,6 @@ import {
   softDeletePatient,
   updatePatient,
 } from "./patient-service";
-import { maskPatientForLog } from "../../shared/utils/pii-sanitizer";
 
 const patientIdParamSchema = z.string().uuid();
 
@@ -60,7 +59,9 @@ patientRouter.post(
   asyncHandler(async (req, res) => {
     const input = createPatientSchema.parse(req.body);
     const patient = await createPatient(input);
-    logger.info({ patient: maskPatientForLog(patient as unknown as Record<string, unknown>) }, "patient_registered_via_api");
+    // Full payload logged intentionally - this is the spec-required "final collected data
+    // payload" observability log (see pii-sanitizer.ts for the redaction policy rationale).
+    logger.info({ patient }, "patient_registered_via_api");
     res.envelope(patient, 201);
   }),
 );
@@ -71,7 +72,7 @@ patientRouter.put(
     const patientId = parsePatientId(req.params.id);
     const input = updatePatientSchema.parse(req.body);
     const patient = await updatePatient(patientId, input);
-    logger.info({ patient: maskPatientForLog(patient as unknown as Record<string, unknown>) }, "patient_updated_via_api");
+    logger.info({ patient }, "patient_updated_via_api");
     res.envelope(patient, 200);
   }),
 );

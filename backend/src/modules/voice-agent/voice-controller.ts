@@ -63,18 +63,31 @@ voiceRouter.post("/webhook", async (req: Request, res: Response, _next: NextFunc
     return;
   }
 
-  const results = await Promise.all(
-    toolCalls.map(async (call) => {
-      const handler = TOOL_HANDLERS[call.function.name];
-      if (!handler) {
-        logger.warn({ tool: call.function.name }, "unknown_voice_tool_call");
-        return { toolCallId: call.id, result: "Sorry, I can't do that right now." };
-      }
-      const args = parseArguments(call.function.arguments);
-      const result = await handler(args);
-      return { toolCallId: call.id, result };
-    }),
-  );
-
-  res.status(200).json({ results });
+  // Top-level guard: handleCreatePatientTool/handleUpdatePatientTool already catch their own
+  // DB/validation errors and return a speakable message, but this catches anything unforeseen
+  // (a bug, an unexpected payload shape) so the call always gets a spoken response instead of
+  // hanging or dropping - "graceful degradation" applies to the whole webhook, not just the
+  // expected failure paths.
+  try {
+    const results = await Promise.all(
+      toolCalls.map(async (call) => {
+        const handler = TOOL_HANDLERS[call.function.name];
+        if (!handler) {
+          logger.warn({ tool: call.function.name }, "unknown_voice_tool_call");
+          return { toolCallId: call.id, result: "Sorry, I can't do that right now." };
+        }
+        const args = parseArguments(call.function.arguments);
+        const result = await handler(args);
+        return { toolCallId: call.id, result };
+      }),
+    );
+    res.status(200).json({ results });
+  } catch (error) {
+    logger.error({ err: error }, "voice_webhook_unhandled_error");
+    const fallbackResults = toolCalls.map((call) => ({
+      toolCallId: call.id,
+      result: "I'm sorry, something went wrong on our end. Could we try that again?",
+    }));
+    res.status(200).json({ results: fallbackResults });
+  }
 });

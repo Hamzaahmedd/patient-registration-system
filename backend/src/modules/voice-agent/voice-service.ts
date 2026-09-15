@@ -2,7 +2,6 @@ import { ZodError } from "zod";
 import { NotFoundError } from "../../shared/middleware/error-handler";
 import { parseSpokenDate } from "../../shared/utils/date-parser";
 import { logger } from "../../config/logger";
-import { maskPatientForLog } from "../../shared/utils/pii-sanitizer";
 import { createPatientSchema, updatePatientSchema } from "../patient/patient-schema";
 import { createPatient, updatePatient } from "../patient/patient-service";
 
@@ -35,7 +34,9 @@ export async function handleCreatePatientTool(rawArgs: Record<string, unknown>):
   try {
     const input = createPatientSchema.parse(normalizeVoiceInput(rawArgs));
     const patient = await createPatient(input);
-    logger.info({ patient: maskPatientForLog(patient as unknown as Record<string, unknown>) }, "patient_registered_via_voice_agent");
+    // Full payload logged intentionally - required "final collected data payload" log (see
+    // pii-sanitizer.ts for why this is unmasked while ambient logs are still redacted).
+    logger.info({ patient }, "patient_registered_via_voice_agent");
     return `Registration saved successfully for ${patient.first_name} ${patient.last_name}. Their patient ID is ${patient.patient_id}.`;
   } catch (error) {
     if (error instanceof ZodError) {
@@ -54,7 +55,7 @@ export async function handleUpdatePatientTool(rawArgs: Record<string, unknown>):
   try {
     const input = updatePatientSchema.parse(normalizeVoiceInput(fields));
     const patient = await updatePatient(patientId, input);
-    logger.info({ patient: maskPatientForLog(patient as unknown as Record<string, unknown>) }, "patient_updated_via_voice_agent");
+    logger.info({ patient }, "patient_updated_via_voice_agent");
     return `Your information has been updated, ${patient.first_name}.`;
   } catch (error) {
     if (error instanceof ZodError) {

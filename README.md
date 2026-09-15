@@ -5,8 +5,8 @@ persistent Neon Postgres database, built as a modular monolith.
 
 ## Live demo (session-specific, see note)
 
-- **API base URL (local + tunneled):** `https://backtalk-despite-frostily.ngrok-free.dev`
-- **Phone number:** `<fill in the Vapi trial number — area code 406>` (see Vapi dashboard → Phone Numbers)
+- **API_BASE_URL:** `<PASTE_API_BASE_URL_HERE>`
+- **Phone number:** `+14066013038`
 
 > These are only live while the developer's local server + ngrok tunnel are running for this
 > review session. For a durable link, redeploy `backend/` to Render/Fly.io and update the
@@ -151,6 +151,46 @@ to the caller and must stay a plain sentence.
 
 Spoken dates ("January 5th, 1990") are normalized by `date-parser.ts` before they ever reach the
 strict `MM/DD/YYYY` Zod check, so the caller can speak naturally while the schema stays simple.
+
+## Production guardrails self-audit
+
+Checked against the codebase (not just design intent) before moving to bonus features:
+
+| Guardrail | Status | Where |
+|---|---|---|
+| Strict Zod validation on `create_patient`/`update_patient` tool params | ✅ | `patient-schema.ts`, applied in `voice-service.ts` before any DB write |
+| Caller confirmation (HITL) gates the save tool call | ✅ prompt-enforced | `REGISTRATION_SYSTEM_PROMPT` in `prompt-templates.ts` — see note below |
+| Dialogue flow: required → optional opt-in → read-back → save | ✅ prompt-enforced | same prompt, "Required/Optional/Confirmation" sections |
+| Spoken date parsing into strict MM/DD/YYYY before validation | ✅ | `date-parser.ts`, wired in via `normalizeVoiceInput` in `voice-service.ts` |
+| PII redaction in logs, full payload logged per spec | ✅ (fixed) | see below |
+| DB/tool exceptions return clean spoken text, never drop the call | ✅ (fixed) | see below |
+| Vapi webhook responses decoupled from the REST envelope | ✅ | `voice-controller.ts` returns bare `{ results: [...] }`; only `/patients` gets `response-envelope.ts` |
+| Neon Postgres + Prisma persistence survives restarts | ✅ | verified live — see "Working system" notes above; also re-confirmed via a standalone process reading the DB with zero app state carried over |
+
+**Two gaps found and fixed during this audit:**
+1. **PII redaction was silently eating the required log.** The original redact config used
+   blanket wildcards (`*.phone_number`, `*.email`, etc.) that would have redacted the very
+   "final collected data payload" the spec requires to be logged in full. Fixed:
+   `pii-sanitizer.ts` now redacts only real ambient-log secret surfaces (the Vapi webhook
+   secret header, an `Authorization` header if ever added) — nothing else in this app logs raw
+   patient fields outside the one intentional, unmasked payload log, so nothing else needs
+   redacting. Verified with a live request: the payload log now shows full field values, and a
+   test `x-vapi-secret` header value came back as `[REDACTED]`.
+2. **The voice webhook had no top-level exception guard.** Each tool handler
+   (`handleCreatePatientTool`/`handleUpdatePatientTool`) already caught its own DB/validation
+   errors and returned a speakable message, but nothing wrapped the route handler itself — an
+   unexpected exception outside those try/catches (a bug, a malformed payload) would have left
+   the call hanging with no response rather than degrading gracefully. Fixed: `voice-controller.ts`
+   now wraps the whole handler in a try/catch that always returns a spoken fallback message per
+   tool call.
+
+**One honest caveat, not a bug:** caller confirmation and the required→optional→confirm→save
+ordering are enforced by the system prompt, not by server-side state. Nothing in the code
+forces the LLM to wait for confirmation before calling `create_patient` — the backend simply
+does whatever it's told the moment a tool call arrives. This is inherent to LLM-driven
+tool-calling assistants (a hard state-machine gate would need to reject/defer tool calls based
+on tracked conversation state, which is out of scope for a 3-hour build) and is worth knowing
+rather than glossing over.
 
 ## Known limitations / trade-offs
 
