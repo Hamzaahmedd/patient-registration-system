@@ -23,6 +23,10 @@ export const env = {
     .filter(Boolean),
   vapi: {
     webhookSecret: process.env.VAPI_WEBHOOK_SECRET ?? "",
+    // Private API key - needed only to resolve authenticated call-recording URLs (Vapi moved
+    // recording storage behind an authenticated endpoint; the plain URL in the webhook payload
+    // is no longer directly fetchable). Never sent to the frontend - see transcript-service.ts.
+    apiKey: process.env.VAPI_API_KEY ?? "",
   },
 };
 

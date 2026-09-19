@@ -90,6 +90,7 @@ Every response uses `{ "data": ..., "error": null }` on success, or
 | GET | `/patients/:id/transcripts` | Per-patient call history |
 | GET | `/transcripts` | Global call log |
 | GET | `/patients/:id/appointments` | Per-patient mock bookings |
+| GET | `/transcripts/:id/recording` | 302-redirects to a short-lived, playable recording URL (not JSON) |
 
 ## Data model
 
@@ -101,6 +102,12 @@ emergency contact, timestamps, soft-delete), validated by one shared Zod schema.
 `transcript_text`, `recording_url`, `duration_seconds`. Populated automatically from Vapi's
 `end-of-call-report` webhook event.
 
+`recording_url` is the raw URL Vapi sends, which is **not directly playable** — Vapi moved
+recording storage behind an authenticated API. `GET /transcripts/:id/recording` resolves an
+actual playable URL server-side (calling Vapi's API with a private key that never reaches the
+browser) and 302-redirects to it; the dashboard's audio player points at this endpoint, not the
+stored `recording_url` directly.
+
 **Appointment** — `patient_id` (required — can't exist before the patient does), `preferred_date`,
 `preferred_time_slot`. Mock booking, no real calendar logic. Populated by the `schedule_appointment`
 voice tool.
@@ -109,7 +116,8 @@ voice tool.
 
 **Backend** (`backend/.env.example`): `DATABASE_URL` (required), `PORT`, `NODE_ENV`,
 `CORS_ORIGINS` (comma-separated allowed origins for the frontend), `VAPI_WEBHOOK_SECRET`
-(optional — see below).
+(optional — see below), `VAPI_API_KEY` (private key from Vapi's dashboard — needed only to
+resolve playable recording URLs; never exposed to the frontend).
 
 **Frontend** (`frontend/.env.example`): `VITE_API_BASE_URL` — set to the backend's URL for a
 deployed build; leave unset for local dev (uses the Vite proxy instead).

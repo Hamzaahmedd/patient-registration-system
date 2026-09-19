@@ -1,4 +1,5 @@
 import { Clock, FileText } from "lucide-react";
+import { API_BASE } from "../api/client";
 import type { Transcript } from "../types/transcript";
 import { formatDateTime, formatDuration } from "../utils/format";
 
@@ -29,10 +30,14 @@ export function TranscriptListItem({ transcript, callerLabel }: TranscriptListIt
 
       {transcript.recording_url && (
         <div className="mt-3">
+          {/* Points at our own backend proxy, not the raw stored URL - Vapi's recording storage
+              is now behind an authenticated API, so the stored URL isn't directly playable.
+              The proxy resolves a short-lived signed URL server-side (using a private API key
+              that never reaches the browser) and redirects here. */}
           {/* eslint-disable-next-line jsx-a11y/media-has-caption -- call recordings have no captions to provide */}
-          <audio controls src={transcript.recording_url} className="h-9 w-full max-w-sm" />
+          <audio controls src={`${API_BASE}/transcripts/${transcript.id}/recording`} className="h-9 w-full max-w-sm" />
           <a
-            href={transcript.recording_url}
+            href={`${API_BASE}/transcripts/${transcript.id}/recording`}
             target="_blank"
             rel="noreferrer"
             className="mt-1 inline-block text-xs text-indigo-600 hover:underline"

@@ -1,5 +1,8 @@
 import type { Transcript } from "@prisma/client";
 import { prisma } from "../../config/database";
+import { env } from "../../config/env";
+import { NotFoundError } from "../../shared/middleware/error-handler";
+import { logger } from "../../config/logger";
 import type { CreateTranscriptInput, TranscriptDTO } from "./transcript-types";
 
 function toDTO(transcript: Transcript): TranscriptDTO {
@@ -49,4 +52,39 @@ export async function listAllTranscripts(): Promise<TranscriptDTO[]> {
     orderBy: { created_at: "desc" },
   });
   return transcripts.map(toDTO);
+}
+
+export async function getTranscriptById(id: string): Promise<TranscriptDTO> {
+  const transcript = await prisma.transcript.findUnique({ where: { id } });
+  if (!transcript) throw new NotFoundError(`No transcript found with id ${id}.`);
+  return toDTO(transcript);
+}
+
+/**
+ * Resolves a playable recording URL for a transcript by calling Vapi's authenticated recording
+ * endpoint server-side (the private API key never reaches the browser - see Vapi's own docs on
+ * this: "Never expose your Private API Key in client-side code"). Vapi responds with a 302 to a
+ * short-lived signed URL; we return that Location so the caller (transcript-controller.ts) can
+ * redirect the browser straight to it - the browser then fetches the audio directly from
+ * Cloudflare, no proxying of the actual audio bytes through our server.
+ */
+export async function resolveRecordingRedirectUrl(vapiCallId: string): Promise<string> {
+  if (!env.vapi.apiKey) {
+    throw new Error("VAPI_API_KEY is not configured - cannot resolve an authenticated recording URL.");
+  }
+
+  const response = await fetch(`https://api.vapi.ai/call/${vapiCallId}/stereo-recording`, {
+    headers: { Authorization: `Bearer ${env.vapi.apiKey}` },
+    redirect: "manual",
+  });
+
+  const location = response.headers.get("location");
+  if (!location) {
+    logger.warn(
+      { vapiCallId, status: response.status },
+      "vapi_recording_redirect_missing",
+    );
+    throw new NotFoundError("No recording is available for this call.");
+  }
+  return location;
 }

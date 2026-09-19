@@ -354,6 +354,31 @@ async function main() {
   const anonEntry = (globalTranscripts.json?.data ?? []).find((t: any) => t.vapi_call_id === "test-call-anon-1");
   assert(anonEntry?.patient_id === null, "Anonymous transcript has a null patient_id");
 
+  // 19b. GET /transcripts/:id/recording - authenticated recording playback proxy
+  const recordingUnknownId = await req("GET", "/transcripts/00000000-0000-0000-0000-000000000000/recording");
+  assert(
+    recordingUnknownId.status === 404,
+    `GET /transcripts/<unknown-uuid>/recording returns 404 (got ${recordingUnknownId.status})`,
+  );
+
+  const recordingNoUrl = await req("GET", `/transcripts/${anonEntry.id}/recording`);
+  assert(
+    recordingNoUrl.status === 404,
+    "GET /transcripts/:id/recording returns 404 when the transcript has no recording_url (skips the Vapi API call entirely)",
+  );
+
+  // The linked transcript DOES have a recording_url, so this exercises the actual
+  // resolveRecordingRedirectUrl call to Vapi's API. Without a real VAPI_API_KEY configured in
+  // this test environment it fails gracefully (500); with one configured against a fake
+  // vapi_call_id, Vapi itself would report not-found (404). Either way, the required property is
+  // "never crashes, never hangs" - not a specific status code, since that depends on whether
+  // VAPI_API_KEY happens to be set wherever this suite runs.
+  const recordingWithUrl = await req("GET", `/transcripts/${linkedTranscript.id}/recording`);
+  assert(
+    recordingWithUrl.status === 404 || recordingWithUrl.status === 500,
+    `GET /transcripts/:id/recording degrades gracefully when Vapi can't resolve the recording (got ${recordingWithUrl.status})`,
+  );
+
   // Cleanup: remove test transcripts (no DELETE endpoint exists for transcripts by design -
   // hard-delete directly, same as any other test-only fixture data) and soft-delete the fixture patient.
   await prisma.transcript.deleteMany({
