@@ -146,6 +146,14 @@ interface VapiEndOfCallReportMessage {
   call?: {
     id?: string;
     customer?: { number?: string };
+    analysis?: {
+      summary?: string;
+      structuredData?: Record<string, unknown>;
+    };
+  };
+  analysis?: {
+    summary?: string;
+    structuredData?: Record<string, unknown>;
   };
   summary?: string;
   transcript?: string;
@@ -178,10 +186,19 @@ export async function handleEndOfCallReport(message: VapiEndOfCallReportMessage)
       if (patient) patientId = patient.patient_id;
     }
 
+    const rawSummary =
+      message.summary ??
+      message.analysis?.summary ??
+      message.call?.analysis?.summary ??
+      (typeof message.analysis?.structuredData?.summary === "string" ? message.analysis.structuredData.summary : null) ??
+      (typeof message.call?.analysis?.structuredData?.summary === "string" ? message.call.analysis.structuredData.summary : null);
+
+    const summary = typeof rawSummary === "string" && rawSummary.trim().length > 0 ? rawSummary.trim() : null;
+
     const input = createTranscriptSchema.parse({
       patient_id: patientId,
       vapi_call_id: vapiCallId,
-      summary: typeof message.summary === "string" && message.summary.length > 0 ? message.summary : null,
+      summary,
       transcript_text: typeof message.transcript === "string" ? message.transcript : null,
       recording_url: typeof message.recordingUrl === "string" ? message.recordingUrl : null,
       duration_seconds:
